@@ -1,7 +1,7 @@
 /* Archivio IA — note e documenti con ricerca offline e domande a un'IA locale (Ollama). */
 'use strict';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 const $ = (id) => document.getElementById(id);
 
 /* ---------------- Archivio (IndexedDB) ---------------- */
@@ -367,7 +367,15 @@ const settings = {
     try { localStorage.setItem('archivio-settings', JSON.stringify({ url: this.url, model: this.model, k: this.k })); } catch (e) { /* niente */ }
   },
 };
-const baseUrl = () => settings.url.trim().replace(/\/+$/, '');
+// ripulisce l'indirizzo: toglie spazi, "/api/tags" finale, aggiunge https:// se manca
+function cleanUrl(u) {
+  let s = (u || '').trim().replace(/\s+/g, '');
+  if (!s) return '';
+  s = s.replace(/\/api(\/tags)?\/?$/i, '').replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(s)) s = 'https://' + s;
+  return s.replace(/^(https?:\/\/[^/]+)/i, (m) => m.toLowerCase());
+}
+const baseUrl = () => cleanUrl(settings.url);
 
 async function fetchTimeout(url, opts = {}, ms = 6000) {
   const ctrl = new AbortController();
@@ -620,7 +628,8 @@ async function init() {
   };
 
   $('btnSaveSettings').onclick = async () => {
-    settings.url = $('setUrl').value.trim();
+    settings.url = cleanUrl($('setUrl').value);
+    $('setUrl').value = settings.url;
     settings.model = $('setModel').value || settings.model;
     settings.k = Math.min(15, Math.max(2, +$('setK').value || 6));
     settings.save();
@@ -629,7 +638,8 @@ async function init() {
   };
   $('setModel').onchange = () => { settings.model = $('setModel').value; settings.save(); };
   const testConn = async () => {
-    settings.url = $('setUrl').value.trim();
+    settings.url = cleanUrl($('setUrl').value);
+    $('setUrl').value = settings.url;
     const out = $('testResult');
     if (location.protocol === 'https:' && /^http:/i.test(settings.url)) {
       out.textContent = "⚠︎ L'indirizzo deve iniziare con https:// (usa l'indirizzo di Tailscale), altrimenti il telefono lo blocca.";
@@ -641,7 +651,12 @@ async function init() {
       settings.save();
       out.textContent = `✓ Collegato. Modelli trovati: ${names.join(', ')}`;
     } catch (e) {
-      out.textContent = '✗ Non riesco a collegarmi. Controlla che il Mac mini sia acceso, che Ollama e Tailscale siano attivi e che l\'indirizzo sia giusto.';
+      // capisce se il Mac risponde ma blocca l'app (permesso OLLAMA_ORIGINS mancante)
+      let reachable = false;
+      try { await fetchTimeout(baseUrl() + '/api/tags', { mode: 'no-cors' }, 6000); reachable = true; } catch (e2) { /* niente */ }
+      out.textContent = reachable
+        ? "✗ Il Mac mini risponde, ma blocca l'app. Sul Mac mini rifai il passo 2.4 (i due comandi launchctl) e poi chiudi e riapri Ollama."
+        : '✗ Non riesco a raggiungere il Mac mini. Controlla che Tailscale sia acceso sul telefono, che il Mac mini sia acceso e che l\'indirizzo sia giusto.';
     }
     checkAI();
   };
