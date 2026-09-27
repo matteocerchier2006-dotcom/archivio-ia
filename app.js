@@ -1,38 +1,44 @@
 /* Archivio IA — note e documenti con ricerca offline e domande a un'IA locale (Ollama). */
 'use strict';
 
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.1.0';
 const $ = (id) => document.getElementById(id);
 
 /* ---------------- Archivio (IndexedDB) ---------------- */
+// versione 2 del database: aggiunge cartelle e promemoria senza toccare i documenti già salvati
 const DB = {
   db: null,
   open() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open('archivio-ia', 1);
+      const req = indexedDB.open('archivio-ia', 2);
       req.onupgradeneeded = () => {
         const db = req.result;
-        if (!db.objectStoreNames.contains('docs')) db.createObjectStore('docs', { keyPath: 'id' });
+        for (const name of ['docs', 'folders', 'reminders']) {
+          if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, { keyPath: 'id' });
+        }
       };
       req.onsuccess = () => { this.db = req.result; resolve(); };
       req.onerror = () => reject(req.error);
     });
   },
-  tx(mode, fn) {
+  tx(storeName, mode, fn) {
     return new Promise((resolve, reject) => {
-      const t = this.db.transaction('docs', mode);
-      const store = t.objectStore('docs');
-      const out = fn(store);
+      const t = this.db.transaction(storeName, mode);
+      const out = fn(t.objectStore(storeName));
       t.oncomplete = () => resolve(out && out.result !== undefined ? out.result : undefined);
       t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error || new Error('Spazio esaurito o salvataggio annullato'));
     });
   },
-  all() { return this.tx('readonly', (s) => s.getAll()); },
-  put(doc) { return this.tx('readwrite', (s) => s.put(doc)); },
-  del(id) { return this.tx('readwrite', (s) => s.delete(id)); },
+  all(store = 'docs') { return this.tx(store, 'readonly', (s) => s.getAll()); },
+  put(obj, store = 'docs') { return this.tx(store, 'readwrite', (s) => s.put(obj)); },
+  del(id, store = 'docs') { return this.tx(store, 'readwrite', (s) => s.delete(id)); },
 };
 
 let docs = [];            // tutti i documenti in memoria
+let folders = [];         // cartelle create dall'utente
+let reminders = [];       // promemoria
+let currentFolder = 'all';// cartella selezionata in Documenti ('all', 'none' o id)
 let index = null;         // indice di ricerca
 let currentDocId = null;
 
@@ -177,7 +183,7 @@ function snippet(text, terms, size = 260) {
 }
 
 /* ---------------- Interfaccia generale ---------------- */
-const TITLES = { docs: 'Documenti', search: 'Cerca', ask: 'Chiedi', settings: 'Impostazioni', doc: '' };
+const TITLES = { docs: 'Documenti', search: 'Cerca', ask: 'Chiedi', reminders: 'Promemoria', settings: 'Impostazioni', doc: '' };
 let lastTab = 'docs';
 
 function show(view) {
@@ -188,6 +194,8 @@ function show(view) {
   if (view === 'search') setTimeout(() => $('searchInput').focus(), 50);
   if (view === 'ask') checkAI();
   if (view === 'settings') showStorage();
+  if (view === 'reminders') renderReminders();
+  if (view === 'docs') renderDocs();
   window.scrollTo(0, 0);
 }
 
@@ -199,19 +207,115 @@ function toast(msg, ms = 2500) {
   toastTimer = setTimeout(() => { t.hidden = true; }, ms);
 }
 
-const fmtDate = (ts) => new Date(ts).toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' });
-const typeLabel = (d) => (d.type === 'pdf' ? `PDF · ${d.pages.length} pag.` : d.type === 'file' ? 'File di testo' : 'Nota');
+function setProgress(text, frac) {
+  const p = $('importProgress');
+  if (text === null) { p.hidden = true; return; }
+  p.hidden = false;
+  p.querySelector('.progress-text').textContent = text;
+  p.querySelector('.bar > div').style.width = Math.round((frac || 0) * 100) + '%';
+}
 
+const fmtDate = (ts) => new Date(ts).toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' });
+function typeLabel(d) {
+  if (d.type === 'pdf') return `PDF · ${d.pages.length} pag.` + (d.ocr ? ' · scansione' : '');
+  if (d.type === 'photo') return (d.images && d.images.length > 1) ? `Foto · ${d.images.length}` : 'Foto';
+  if (d.type === 'file') return 'File di testo';
+  return 'Nota';
+}
+
+/* ---------------- Cartelle ---------------- */
+const FOLDER_COLORS = ['#2f5d50', '#3b6fb6', '#b3402e', '#c27c0e', '#7a4fb0', '#2e8b8b', '#c2477a', '#6b716d'];
+const folderById = (id) => folders.find((f) => f.id === id);
+const dot = (color) => `<span class="dot" style="background:${esc(color || '#6b716d')}"></span>`;
+
+function folderTag(d) {
+  const f = d.folderId && folderById(d.folderId);
+  return f ? ` · <span class="fold">${dot(f.color)}${esc(f.name)}</span>` : '';
+}
+
+function renderFolders() {
+  const count = (id) => docs.filter((d) => (id === 'none' ? !folderById(d.folderId) : d.folderId === id)).length;
+  const sorted = [...folders].sort((a, b) => a.name.localeCompare(b.name, 'it'));
+  if (currentFolder !== 'all' && currentFolder !== 'none' && !folderById(currentFolder)) currentFolder = 'all';
+  let html = `<button class="chip ${currentFolder === 'all' ? 'active' : ''}" data-folder="all">Tutti · ${docs.length}</button>`;
+  html += sorted.map((f) => `<button class="chip ${currentFolder === f.id ? 'active' : ''}" data-folder="${f.id}">${dot(f.color)} ${esc(f.name)} · ${count(f.id)}</button>`).join('');
+  const loose = count('none');
+  if (folders.length && loose) html += `<button class="chip ${currentFolder === 'none' ? 'active' : ''}" data-folder="none">Senza cartella · ${loose}</button>`;
+  html += '<button class="chip add" data-folder="new">＋ Cartella</button>';
+  $('folderChips').innerHTML = html;
+  const f = folderById(currentFolder);
+  $('folderHint').hidden = !f;
+  if (f) $('folderHint').textContent = 'Tocca di nuovo la cartella per rinominarla o eliminarla. Quello che aggiungi ora finisce qui.';
+}
+
+function fillFolderSelect(sel, value) {
+  sel.innerHTML = '<option value="">Nessuna cartella</option>' +
+    [...folders].sort((a, b) => a.name.localeCompare(b.name, 'it')).map((f) => `<option value="${f.id}">${esc(f.name)}</option>`).join('') +
+    '<option value="__new">＋ Nuova cartella…</option>';
+  sel.value = value && folderById(value) ? value : '';
+}
+
+// apre la finestra per creare o modificare una cartella; restituisce la cartella salvata (o null)
+function folderDialog(folder) {
+  return new Promise((resolve) => {
+    const dlg = $('folderDialog');
+    $('folderDialogTitle').textContent = folder ? 'Modifica cartella' : 'Nuova cartella';
+    $('folderName').value = folder ? folder.name : '';
+    $('btnFolderDelete').hidden = !folder;
+    const color = folder ? folder.color : FOLDER_COLORS[folders.length % FOLDER_COLORS.length];
+    $('folderColors').innerHTML = FOLDER_COLORS.map((c, i) =>
+      `<input type="radio" name="fcolor" id="fc${i}" value="${c}" ${c === color ? 'checked' : ''}><label for="fc${i}" style="background:${c}"></label>`).join('');
+    dlg.returnValue = '';
+    dlg.onclose = async () => {
+      const action = dlg.returnValue;
+      if (action === 'save') {
+        const name = $('folderName').value.trim();
+        if (!name) return resolve(null);
+        const c = (dlg.querySelector('input[name=fcolor]:checked') || {}).value || FOLDER_COLORS[0];
+        const f = folder || { id: uid(), created: Date.now() };
+        f.name = name; f.color = c; f.updated = Date.now();
+        if (!folder) folders.push(f);
+        await DB.put(f, 'folders');
+        renderFolders();
+        resolve(f);
+      } else if (action === 'delete' && folder) {
+        const n = docs.filter((d) => d.folderId === folder.id).length;
+        if (!confirm(`Eliminare la cartella "${folder.name}"?` + (n ? `\nI suoi ${n} documenti NON vengono cancellati: restano "senza cartella".` : ''))) return resolve(null);
+        for (const d of docs.filter((x) => x.folderId === folder.id)) { d.folderId = null; d.updated = Date.now(); await DB.put(d); }
+        folders = folders.filter((x) => x.id !== folder.id);
+        await DB.del(folder.id, 'folders');
+        if (currentFolder === folder.id) currentFolder = 'all';
+        renderDocs();
+        toast('Cartella eliminata');
+        resolve(null);
+      } else resolve(null);
+    };
+    dlg.showModal();
+    if (!folder) setTimeout(() => $('folderName').focus(), 50);
+  });
+}
+
+/* ---------------- Lista documenti ---------------- */
 function renderDocs() {
+  renderFolders();
+  renderAlertBar();
   const f = norm($('docFilter').value.trim());
-  const list = docs.filter((d) => !f || norm(d.title).includes(f)).sort((a, b) => b.updated - a.updated);
+  const list = docs.filter((d) => {
+    if (currentFolder === 'none' && folderById(d.folderId)) return false;
+    if (currentFolder !== 'all' && currentFolder !== 'none' && d.folderId !== currentFolder) return false;
+    return !f || norm(d.title).includes(f);
+  }).sort((a, b) => b.updated - a.updated);
   $('docList').innerHTML = list.map((d) =>
-    `<li data-id="${d.id}"><div class="t">${esc(d.title || 'Senza titolo')}</div>` +
-    `<div class="s">${typeLabel(d)} · ${fmtDate(d.updated)}</div></li>`).join('');
-  $('emptyDocs').hidden = docs.length > 0;
+    `<li data-id="${d.id}">${d.thumb ? `<img class="mini" src="${d.thumb}" alt="">` : ''}<div class="body"><div class="t">${esc(d.title || 'Senza titolo')}</div>` +
+    `<div class="s">${typeLabel(d)} · ${fmtDate(d.updated)}${currentFolder === 'all' ? folderTag(d) : ''}</div></div></li>`).join('');
+  $('emptyDocs').hidden = list.length > 0;
+  $('emptyDocs').innerHTML = docs.length
+    ? 'Questa cartella è vuota.<br>Quello che aggiungi adesso finisce qui dentro.'
+    : 'Non c\'è ancora niente.<br>Scrivi una nota, fai una foto o aggiungi un PDF per cominciare.';
 }
 
 function docById(id) { return docs.find((d) => d.id === id); }
+const defaultFolder = () => (folderById(currentFolder) ? currentFolder : null);
 
 function openDoc(id, focusTerms) {
   const d = id ? docById(id) : null;
@@ -220,7 +324,11 @@ function openDoc(id, focusTerms) {
   $('docText').value = d ? (d.pages ? d.pages.map((p, i) => `— Pagina ${i + 1} —\n${p}`).join('\n\n') : d.text) : '';
   $('docText').readOnly = !!(d && d.pages);
   $('docMeta').textContent = d ? `${typeLabel(d)} · aggiunto il ${fmtDate(d.created)}` + (d.pages ? ' · il testo dei PDF non si modifica' : '') : 'Nuova nota';
+  fillFolderSelect($('docFolder'), d ? d.folderId : defaultFolder());
+  $('docImages').innerHTML = d && d.images ? d.images.map((src, i) => `<img src="${src}" data-i="${i}" alt="Foto ${i + 1}">`).join('') : '';
+  $('docOcrInfo').hidden = !(d && d.type === 'photo');
   $('btnDeleteDoc').hidden = !d;
+  $('btnDocReminder').hidden = !d;
   show('doc');
   if (!d) setTimeout(() => $('docTitle').focus(), 50);
   if (focusTerms) {
@@ -237,24 +345,27 @@ function openDoc(id, focusTerms) {
   }
 }
 
-async function saveDoc() {
+async function saveDoc(stay) {
   const title = $('docTitle').value.trim() || 'Senza titolo';
   const now = Date.now();
+  const folderId = $('docFolder').value && $('docFolder').value !== '__new' ? $('docFolder').value : null;
   let d = currentDocId ? docById(currentDocId) : null;
   if (d) {
     d.title = title;
     if (!d.pages) d.text = $('docText').value;
+    d.folderId = folderId;
     d.updated = now;
   } else {
-    d = { id: uid(), type: 'note', title, text: $('docText').value, created: now, updated: now };
+    d = { id: uid(), type: 'note', title, text: $('docText').value, folderId, created: now, updated: now };
     docs.push(d);
     currentDocId = d.id;
   }
   await DB.put(d);
   index = null;
   toast('Salvato');
-  renderDocs();
+  if (stay) return d;
   show(lastTab === 'doc' ? 'docs' : lastTab);
+  return d;
 }
 
 async function deleteDoc() {
@@ -264,12 +375,106 @@ async function deleteDoc() {
   await DB.del(d.id);
   docs = docs.filter((x) => x.id !== d.id);
   index = null;
-  renderDocs();
   toast('Eliminato');
   show('docs');
 }
 
-/* ---------------- Importare file ---------------- */
+/* ---------------- Lettura del testo nelle foto (OCR, funziona senza internet) ---------------- */
+const absUrl = (p) => new URL(p, location.href).href;
+const OCR = {
+  worker: null,
+  loading: null,
+  onProgress: null,
+  loadScript() {
+    if (window.Tesseract) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'lib/ocr/tesseract.min.js';
+      s.onload = resolve;
+      s.onerror = () => reject(new Error('Lettore di foto non disponibile'));
+      document.head.appendChild(s);
+    });
+  },
+  get() {
+    if (this.worker) return Promise.resolve(this.worker);
+    if (!this.loading) this.loading = (async () => {
+      await this.loadScript();
+      this.worker = await window.Tesseract.createWorker('ita', 1, {
+        workerPath: absUrl('lib/ocr/worker.min.js'),
+        corePath: absUrl('lib/ocr/'),
+        langPath: absUrl('lib/ocr'),
+        workerBlobURL: false,
+        gzip: true,
+        logger: (m) => { if (m.status === 'recognizing text' && this.onProgress) this.onProgress(m.progress); },
+      });
+      return this.worker;
+    })().catch((e) => { this.loading = null; throw e; });
+    return this.loading;
+  },
+  async read(canvas, onProgress) {
+    const w = await this.get();
+    this.onProgress = onProgress;
+    const { data } = await w.recognize(canvas);
+    this.onProgress = null;
+    return cleanOcr(data.text || '');
+  },
+};
+
+function cleanOcr(t) {
+  return t.replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function loadImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => { resolve(img); setTimeout(() => URL.revokeObjectURL(url), 1000); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Immagine non leggibile')); };
+    img.src = url;
+  });
+}
+
+function toCanvas(src, maxSide) {
+  const w = src.naturalWidth || src.width, h = src.naturalHeight || src.height;
+  const s = Math.min(1, maxSide / Math.max(w, h));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(w * s)); c.height = Math.max(1, Math.round(h * s));
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(src, 0, 0, c.width, c.height);
+  return c;
+}
+
+// una o più foto scelte insieme diventano un solo documento (es. le pagine di una bolletta)
+async function importPhotos(files, step) {
+  const images = [], texts = [];
+  let thumb = null;
+  for (let i = 0; i < files.length; i++) {
+    const label = files.length > 1 ? `foto ${i + 1} di ${files.length}` : 'la foto';
+    step(`Preparo ${label}…`, 0);
+    const img = await loadImage(files[i]);
+    images.push(toCanvas(img, 1400).toDataURL('image/jpeg', 0.72));
+    if (!thumb) thumb = toCanvas(img, 140).toDataURL('image/jpeg', 0.7);
+    step(`Leggo il testo nel${files.length > 1 ? 'la ' + label : 'la foto'}… (può volerci un po')`, 0.02);
+    let text = '';
+    try {
+      text = await OCR.read(toCanvas(img, 2200), (p) => step(null, p));
+    } catch (e) {
+      console.error(e);
+      toast('Non sono riuscito a leggere il testo della foto. La foto è salvata lo stesso: puoi scrivere tu cosa contiene.', 6000);
+    }
+    texts.push(files.length > 1 ? `— Foto ${i + 1} —\n${text}` : text);
+  }
+  const text = texts.join('\n\n');
+  const firstLine = (text.split('\n').map((l) => l.replace(/^— Foto \d+ —$/, '').trim()).find((l) => l.replace(/[^\p{L}]/gu, '').length >= 4) || '').slice(0, 60);
+  const now = Date.now();
+  return {
+    id: uid(), type: 'photo', title: firstLine || `Foto del ${fmtDate(now)}`, text, images, thumb,
+    folderId: defaultFolder(), created: now, updated: now,
+  };
+}
+
+/* ---------------- PDF (anche scansionati) ---------------- */
 let pdfLoading = null;
 function loadPdfJs() {
   if (window.pdfjsLib) return Promise.resolve();
@@ -283,10 +488,11 @@ function loadPdfJs() {
   return pdfLoading;
 }
 
-async function readPdf(file, onPage) {
+async function readPdf(file, step) {
   await loadPdfJs();
   const pdf = await window.pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
   const pages = [];
+  let scanned = 0, ocrFailed = false;
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
@@ -299,42 +505,283 @@ async function readPdf(file, onPage) {
       if (it.hasEOL) text += '\n';
       lastY = y;
     }
-    pages.push(text.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim());
-    onPage && onPage(i, pdf.numPages);
+    text = text.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+    // pagina senza testo = scansione: la "fotografo" e leggo il testo
+    if (text.replace(/\s/g, '').length < 25 && !ocrFailed) {
+      scanned++;
+      step(`"${file.name}": pagina ${i} di ${pdf.numPages} è una scansione, leggo il testo… (può volerci un po')`, (i - 1) / pdf.numPages);
+      try {
+        const vp1 = page.getViewport({ scale: 1 });
+        const vp = page.getViewport({ scale: Math.min(3, 2000 / vp1.width) });
+        const c = document.createElement('canvas');
+        c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+        const ctx = c.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        text = await OCR.read(c, (p) => step(null, (i - 1 + p) / pdf.numPages));
+        c.width = c.height = 0; // libera memoria
+      } catch (e) {
+        console.error(e);
+        ocrFailed = true;
+      }
+    } else step(`Leggo "${file.name}": pagina ${i} di ${pdf.numPages}`, i / pdf.numPages);
+    pages.push(text);
   }
-  return pages;
+  return { pages, scanned, ocrFailed };
 }
 
 async function importFiles(files) {
-  const prog = $('importProgress');
-  prog.hidden = false;
-  let added = 0;
-  for (const file of files) {
+  files = [...files];
+  let lastText = '';
+  const step = (text, frac) => { if (text !== null) lastText = text; setProgress(lastText, frac); };
+  const added = [];
+  const images = files.filter((f) => /^image\//.test(f.type) || /\.(jpe?g|png|heic|webp)$/i.test(f.name));
+  const others = files.filter((f) => !images.includes(f));
+  if (images.length) {
+    try {
+      const d = await importPhotos(images, step);
+      await DB.put(d);
+      docs.push(d); added.push(d);
+    } catch (e) {
+      console.error(e);
+      toast(/QuotaExceeded|Spazio/i.test(String(e)) ? 'Spazio sul telefono esaurito.' : 'Non riesco a leggere la foto', 4000);
+    }
+  }
+  for (const file of others) {
     try {
       const name = file.name.replace(/\.[^.]+$/, '');
       const now = Date.now();
       let d;
       if (/\.pdf$/i.test(file.name) || file.type === 'application/pdf') {
-        prog.textContent = `Leggo "${file.name}"…`;
-        const pages = await readPdf(file, (i, n) => { prog.textContent = `Leggo "${file.name}": pagina ${i} di ${n}`; });
+        step(`Leggo "${file.name}"…`, 0);
+        const { pages, scanned, ocrFailed } = await readPdf(file, step);
         const chars = pages.join('').replace(/\s/g, '').length;
-        if (chars < 20) toast(`"${file.name}" sembra una scansione senza testo: non potrò cercarci dentro.`, 5000);
-        d = { id: uid(), type: 'pdf', title: name, pages, created: now, updated: now };
+        if (ocrFailed) toast(`Non sono riuscito a leggere le pagine scansionate di "${file.name}". La prima volta serve internet per preparare il lettore.`, 6000);
+        else if (chars < 20) toast(`In "${file.name}" non ho trovato testo leggibile.`, 5000);
+        d = { id: uid(), type: 'pdf', title: name, pages, ocr: scanned > 0, folderId: defaultFolder(), created: now, updated: now };
       } else {
-        d = { id: uid(), type: 'file', title: name, text: await file.text(), created: now, updated: now };
+        d = { id: uid(), type: 'file', title: name, text: await file.text(), folderId: defaultFolder(), created: now, updated: now };
       }
       await DB.put(d);
-      docs.push(d);
-      added++;
+      docs.push(d); added.push(d);
     } catch (e) {
       console.error(e);
       toast(`Non riesco a leggere "${file.name}"`, 4000);
     }
   }
-  prog.hidden = true;
+  setProgress(null);
   index = null;
   renderDocs();
-  if (added) toast(added === 1 ? 'Documento aggiunto' : `${added} documenti aggiunti`);
+  if (added.length === 1 && added[0].type === 'photo') {
+    toast('Foto salvata: controlla il titolo e il testo letto', 3500);
+    openDoc(added[0].id);
+  } else if (added.length) toast(added.length === 1 ? 'Documento aggiunto' : `${added.length} documenti aggiunti`);
+}
+
+/* ---------------- Promemoria ---------------- */
+const pad = (n) => String(n).padStart(2, '0');
+const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+function parseDay(s) { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); }
+function daysUntil(s) { return Math.round((parseDay(s) - parseDay(todayStr())) / 86400000); }
+function addMonths(s, n) {
+  const [y, m, d] = s.split('-').map(Number);
+  const t = new Date(y, m - 1 + n, 1);
+  const last = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
+  return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(Math.min(d, last))}`;
+}
+function fmtDay(s) {
+  return parseDay(s).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' });
+}
+function whenText(r) {
+  const n = daysUntil(r.date);
+  const rel = n === 0 ? 'oggi' : n === 1 ? 'domani' : n === -1 ? 'ieri' : n < 0 ? `${-n} giorni fa` : n <= 60 ? `tra ${n} giorni` : '';
+  return fmtDay(r.date) + (r.time ? ' alle ' + r.time : '') + (rel ? ` (${rel})` : '');
+}
+function remState(r) {
+  if (r.done) return 'done';
+  const n = daysUntil(r.date);
+  if (n < 0) return 'over';
+  if (n <= (r.notice ?? 7)) return 'soon';
+  return 'later';
+}
+const REPEAT_LABEL = { month: 'ogni mese', year: 'ogni anno' };
+
+function renderReminders() {
+  const groups = { over: [], soon: [], later: [], done: [] };
+  reminders.forEach((r) => groups[remState(r)].push(r));
+  const byDate = (a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || ''));
+  Object.values(groups).forEach((g) => g.sort(byDate));
+  groups.done.reverse();
+  const card = (r) => {
+    const st = remState(r);
+    const d = r.docId && docById(r.docId);
+    return `<div class="rem ${st}" data-id="${r.id}">
+      <button class="check" data-act="toggle" aria-label="Fatto">${r.done ? '✓' : ''}</button>
+      <div class="body" data-act="edit">
+        <div class="t">${esc(r.title)}</div>
+        <div class="s"><span class="when ${st}">${esc(whenText(r))}</span>${r.repeat ? ' · 🔁 ' + REPEAT_LABEL[r.repeat] : ''}</div>
+        ${r.note ? `<div class="s">${esc(r.note)}</div>` : ''}
+        ${d ? `<div class="doclink" data-act="doc">📎 ${esc(d.title)}</div>` : ''}
+      </div></div>`;
+  };
+  const section = (key, title, list) => (list.length ? `<div class="rem-group ${key}"><h3>${title}</h3>${list.map(card).join('')}</div>` : '');
+  $('reminderList').innerHTML =
+    section('over', 'Scaduti', groups.over) +
+    section('soon', 'In arrivo', groups.soon) +
+    section('later', 'Più avanti', groups.later) +
+    section('done', 'Fatti', groups.done.slice(0, 15));
+  $('emptyReminders').hidden = reminders.length > 0;
+  updateBadge();
+}
+
+function dueCount() { return reminders.filter((r) => ['over', 'soon'].includes(remState(r))).length; }
+function updateBadge() {
+  const n = dueCount();
+  $('remBadge').hidden = !n;
+  $('remBadge').textContent = n;
+}
+function renderAlertBar() {
+  let bar = $('alertBar');
+  const over = reminders.filter((r) => remState(r) === 'over').length;
+  const n = dueCount();
+  if (!n) { if (bar) bar.remove(); updateBadge(); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'alertBar'; bar.className = 'alertbar';
+    bar.onclick = () => show('reminders');
+    $('view-docs').prepend(bar);
+  }
+  bar.innerHTML = `⏰ Hai <b>${n}</b> promemoria ${over ? `(${over} scadut${over === 1 ? 'o' : 'i'})` : 'in arrivo'} · <u>vedi</u>`;
+  updateBadge();
+}
+
+async function toggleReminder(r) {
+  if (!r.done && r.repeat) {
+    const old = r.date;
+    // passa alla prossima scadenza futura
+    do { r.date = addMonths(r.date, r.repeat === 'year' ? 12 : 1); } while (daysUntil(r.date) < 0);
+    r.lastDone = old;
+    toast('Fatto! Prossima volta: ' + fmtDay(r.date), 3500);
+  } else {
+    r.done = !r.done;
+    if (r.done) toast('Fatto ✓');
+  }
+  r.updated = Date.now();
+  await DB.put(r, 'reminders');
+  renderReminders();
+}
+
+function reminderDialog(r, preset) {
+  const dlg = $('remDialog');
+  $('remDialogTitle').textContent = r ? 'Modifica promemoria' : 'Nuovo promemoria';
+  const v = r || { title: '', date: '', time: '', repeat: '', notice: 7, note: '', docId: null, ...preset };
+  $('remTitle').value = v.title;
+  $('remDate').value = v.date || addMonths(todayStr(), 0);
+  $('remTime').value = v.time || '';
+  $('remRepeat').value = v.repeat || '';
+  $('remNotice').value = String(v.notice ?? 7);
+  $('remNote').value = v.note || '';
+  $('remDoc').innerHTML = '<option value="">Nessuno</option>' +
+    [...docs].sort((a, b) => a.title.localeCompare(b.title, 'it')).map((d) => `<option value="${d.id}">${esc(d.title)}</option>`).join('');
+  $('remDoc').value = v.docId && docById(v.docId) ? v.docId : '';
+  $('btnRemDelete').hidden = !r;
+  dlg.returnValue = '';
+  dlg.onclose = async () => {
+    const action = dlg.returnValue;
+    if (action === 'save' || action === 'calendar') {
+      const obj = r || { id: uid(), created: Date.now(), done: false };
+      obj.title = $('remTitle').value.trim() || 'Promemoria';
+      obj.date = $('remDate').value || todayStr();
+      obj.time = $('remTime').value || '';
+      obj.repeat = $('remRepeat').value || '';
+      obj.notice = +$('remNotice').value;
+      obj.note = $('remNote').value.trim();
+      obj.docId = $('remDoc').value || null;
+      if (r && daysUntil(obj.date) >= 0) obj.done = false;
+      obj.updated = Date.now();
+      if (!r) reminders.push(obj);
+      await DB.put(obj, 'reminders');
+      renderReminders(); renderAlertBar();
+      if (action === 'calendar') addToCalendar(obj);
+      else toast('Promemoria salvato');
+    } else if (action === 'delete' && r) {
+      if (!confirm(`Eliminare il promemoria "${r.title}"?`)) return;
+      reminders = reminders.filter((x) => x.id !== r.id);
+      await DB.del(r.id, 'reminders');
+      renderReminders(); renderAlertBar();
+      toast('Promemoria eliminato');
+    }
+  };
+  dlg.showModal();
+}
+
+/* Calendario del telefono: su iPhone un file .ics, su Android Google Calendar */
+function icsEscape(s) { return String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n'); }
+function icsFold(line) {
+  const out = [];
+  while (line.length > 74) { out.push(line.slice(0, 74)); line = ' ' + line.slice(74); }
+  out.push(line);
+  return out.join('\r\n');
+}
+function buildIcs(r) {
+  const ymd = r.date.replace(/-/g, '');
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  const d = r.docId && docById(r.docId);
+  const desc = [r.note, d ? 'Documento: ' + d.title : '', 'Creato con Archivio IA'].filter(Boolean).join('\n');
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Archivio IA//IT', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
+    'BEGIN:VEVENT', `UID:${r.id}@archivio-ia`, `DTSTAMP:${stamp}`];
+  if (r.time) {
+    const [h, m] = r.time.split(':');
+    const end = new Date(parseDay(r.date).getTime() + ((+h) * 60 + (+m) + 30) * 60000);
+    const endStr = `${end.getFullYear()}${pad(end.getMonth() + 1)}${pad(end.getDate())}T${pad(end.getHours())}${pad(end.getMinutes())}00`;
+    lines.push(`DTSTART:${ymd}T${h}${m}00`, `DTEND:${endStr}`);
+  } else {
+    const next = new Date(parseDay(r.date).getTime() + 86400000 + 3600000);
+    lines.push(`DTSTART;VALUE=DATE:${ymd}`, `DTEND;VALUE=DATE:${next.getFullYear()}${pad(next.getMonth() + 1)}${pad(next.getDate())}`);
+  }
+  if (r.repeat) lines.push(`RRULE:FREQ=${r.repeat === 'year' ? 'YEARLY' : 'MONTHLY'}`);
+  lines.push(`SUMMARY:${icsEscape(r.title)}`);
+  if (desc) lines.push(`DESCRIPTION:${icsEscape(desc)}`);
+  const alarm = (trigger) => lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${icsEscape(r.title)}`, `TRIGGER:${trigger}`, 'END:VALARM');
+  // avviso il giorno stesso (alle 9 se senza ora) + avviso in anticipo
+  alarm(r.time ? '-PT15M' : 'PT9H');
+  // senza ora l'evento inizia a mezzanotte: "N giorni prima alle 9" = N*24-9 ore prima
+  if (r.notice > 0) alarm(r.time ? `-P${r.notice}D` : `-PT${r.notice * 24 - 9}H`);
+  lines.push('END:VEVENT', 'END:VCALENDAR');
+  return lines.map(icsFold).join('\r\n') + '\r\n';
+}
+
+const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+function googleCalendarUrl(r) {
+  const ymd = r.date.replace(/-/g, '');
+  let dates;
+  if (r.time) {
+    const [h, m] = r.time.split(':');
+    const end = new Date(parseDay(r.date).getTime() + ((+h) * 60 + (+m) + 30) * 60000);
+    dates = `${ymd}T${h}${m}00/${end.getFullYear()}${pad(end.getMonth() + 1)}${pad(end.getDate())}T${pad(end.getHours())}${pad(end.getMinutes())}00`;
+  } else {
+    const next = new Date(parseDay(r.date).getTime() + 86400000 + 3600000);
+    dates = `${ymd}/${next.getFullYear()}${pad(next.getMonth() + 1)}${pad(next.getDate())}`;
+  }
+  const p = new URLSearchParams({ action: 'TEMPLATE', text: r.title, dates, details: r.note || '' });
+  if (r.repeat) p.set('recur', `RRULE:FREQ=${r.repeat === 'year' ? 'YEARLY' : 'MONTHLY'}`);
+  return 'https://calendar.google.com/calendar/render?' + p.toString();
+}
+
+function addToCalendar(r) {
+  if (isIOS()) {
+    const file = new File([buildIcs(r)], 'promemoria.ics', { type: 'text/calendar' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(file);
+    a.download = 'promemoria.ics';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    toast('Apri il file scaricato e scegli "Aggiungi a Calendario"', 5000);
+  } else {
+    window.open(googleCalendarUrl(r), '_blank');
+    toast('Si apre Google Calendar: tocca "Salva"', 4000);
+  }
 }
 
 /* ---------------- Ricerca (schermata Cerca) ---------------- */
@@ -350,9 +797,9 @@ function runSearch() {
   }
   ul.innerHTML = results.map(({ chunk }) => {
     const d = docById(chunk.docId);
-    return `<li data-id="${d.id}"><div class="t">${highlight(d.title, terms)}</div>` +
-      `<div class="s">${typeLabel(d)}${chunk.page ? ' · pagina ' + chunk.page : ''}</div>` +
-      `<div class="snip">${snippet(chunk.text, terms)}</div></li>`;
+    return `<li data-id="${d.id}">${d.thumb ? `<img class="mini" src="${d.thumb}" alt="">` : ''}<div class="body"><div class="t">${highlight(d.title, terms)}</div>` +
+      `<div class="s">${typeLabel(d)}${chunk.page ? ' · pagina ' + chunk.page : ''}${folderTag(d)}</div>` +
+      `<div class="snip">${snippet(chunk.text, terms)}</div></div></li>`;
   }).join('');
   ul.dataset.terms = JSON.stringify([...terms]);
 }
@@ -537,7 +984,7 @@ async function ask(question) {
 
 /* ---------------- Esporta / importa ---------------- */
 async function exportAll() {
-  const data = JSON.stringify({ app: 'archivio-ia', version: 1, exported: Date.now(), docs });
+  const data = JSON.stringify({ app: 'archivio-ia', version: 2, exported: Date.now(), docs, folders, reminders });
   const name = `archivio-${new Date().toISOString().slice(0, 10)}.json`;
   const file = new File([data], name, { type: 'application/json' });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -550,22 +997,41 @@ async function exportAll() {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
+// unisce: aggiunge quello che manca e aggiorna quello che nel file è più recente
+async function mergeInto(list, incoming, store) {
+  let added = 0, updated = 0;
+  for (const x of incoming || []) {
+    if (!x || !x.id) continue;
+    const mine = list.find((y) => y.id === x.id);
+    if (!mine) { list.push(x); await DB.put(x, store); added++; }
+    else if ((x.updated || 0) > (mine.updated || 0)) { Object.assign(mine, x); await DB.put(mine, store); updated++; }
+  }
+  return { added, updated };
+}
+
 async function importAll(file) {
+  let data;
   try {
-    const data = JSON.parse(await file.text());
+    data = JSON.parse(await file.text());
     if (data.app !== 'archivio-ia' || !Array.isArray(data.docs)) throw new Error('formato');
-    let added = 0, updated = 0;
-    for (const d of data.docs) {
-      if (!d || !d.id) continue;
-      const mine = docById(d.id);
-      if (!mine) { docs.push(d); await DB.put(d); added++; }
-      else if (d.updated > mine.updated) { Object.assign(mine, d); await DB.put(mine); updated++; }
-    }
-    index = null;
-    renderDocs();
-    toast(`Importati ${added} nuovi documenti` + (updated ? `, ${updated} aggiornati` : ''), 3500);
   } catch (e) {
     toast('Questo file non è un archivio valido', 3500);
+    return;
+  }
+  try {
+    const f = await mergeInto(folders, data.folders, 'folders');
+    const d = await mergeInto(docs, data.docs, 'docs');
+    const r = await mergeInto(reminders, data.reminders, 'reminders');
+    index = null;
+    renderDocs(); renderReminders();
+    const parts = [d.added === 1 ? '1 documento nuovo' : `${d.added} documenti nuovi`];
+    if (d.updated) parts.push(`${d.updated} aggiornati`);
+    if (f.added) parts.push(f.added === 1 ? '1 cartella' : `${f.added} cartelle`);
+    if (r.added) parts.push(`${r.added} promemoria`);
+    toast('Importati: ' + parts.join(', '), 4000);
+  } catch (e) {
+    console.error(e);
+    toast('Importazione interrotta: forse lo spazio sul telefono è finito', 4000);
   }
 }
 
@@ -590,8 +1056,12 @@ async function init() {
 
   await DB.open();
   docs = await DB.all() || [];
+  folders = await DB.all('folders') || [];
+  reminders = await DB.all('reminders') || [];
   renderDocs();
   checkAI();
+  // controlla le scadenze ogni volta che si torna sull'app
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { renderAlertBar(); if (lastTab === 'reminders') renderReminders(); } });
 
   // chiede al sistema di non cancellare i dati
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
@@ -602,9 +1072,55 @@ async function init() {
   $('docList').onclick = (e) => { const li = e.target.closest('li[data-id]'); if (li) openDoc(li.dataset.id); };
   $('docFilter').oninput = renderDocs;
   $('fileInput').onchange = (e) => { importFiles([...e.target.files]); e.target.value = ''; };
+  $('photoInput').onchange = (e) => { importFiles([...e.target.files]); e.target.value = ''; };
   $('btnBack').onclick = () => show(lastTab);
-  $('btnSaveDoc').onclick = saveDoc;
+  $('btnSaveDoc').onclick = () => saveDoc();
   $('btnDeleteDoc').onclick = deleteDoc;
+
+  // cartelle
+  $('folderChips').onclick = async (e) => {
+    const b = e.target.closest('[data-folder]');
+    if (!b) return;
+    const id = b.dataset.folder;
+    if (id === 'new') {
+      const f = await folderDialog(null);
+      if (f) { currentFolder = f.id; renderDocs(); toast(`Cartella "${f.name}" creata`); }
+    } else if (id === currentFolder && folderById(id)) {
+      await folderDialog(folderById(id));
+      renderDocs();
+    } else { currentFolder = id; renderDocs(); }
+  };
+  $('docFolder').onchange = async () => {
+    if ($('docFolder').value !== '__new') return;
+    const f = await folderDialog(null);
+    fillFolderSelect($('docFolder'), f ? f.id : null);
+  };
+
+  // foto a schermo intero
+  $('docImages').onclick = (e) => {
+    const img = e.target.closest('img');
+    if (!img) return;
+    $('imgViewer').querySelector('img').src = img.src;
+    $('imgViewer').hidden = false;
+  };
+  $('imgViewer').onclick = () => { $('imgViewer').hidden = true; };
+
+  // promemoria
+  $('btnNewReminder').onclick = () => reminderDialog(null);
+  $('btnDocReminder').onclick = async () => {
+    const d = await saveDoc(true);
+    reminderDialog(null, { title: d.title, docId: d.id });
+  };
+  $('reminderList').onclick = (e) => {
+    const el = e.target.closest('[data-act]');
+    const card = e.target.closest('.rem');
+    if (!el || !card) return;
+    const r = reminders.find((x) => x.id === card.dataset.id);
+    if (!r) return;
+    if (el.dataset.act === 'toggle') toggleReminder(r);
+    else if (el.dataset.act === 'doc') openDoc(r.docId);
+    else reminderDialog(r);
+  };
 
   $('searchInput').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 200); };
   $('searchResults').onclick = (e) => {

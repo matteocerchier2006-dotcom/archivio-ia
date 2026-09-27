@@ -23,16 +23,30 @@
 <main>
   <!-- DOCUMENTI -->
   <section id="view-docs" class="view active">
+    <div class="chips" id="folderChips"></div>
     <div class="actions">
-      <button class="primary" id="btnNewNote">＋ Nuova nota</button>
-      <label class="button">📄 Aggiungi file
-        <input type="file" id="fileInput" accept=".pdf,.txt,.md,application/pdf,text/plain" multiple hidden>
+      <button class="primary" id="btnNewNote">＋ Nota</button>
+      <label class="button">📷 Foto
+        <input type="file" id="photoInput" accept="image/*" multiple hidden>
+      </label>
+      <label class="button">📄 File
+        <input type="file" id="fileInput" accept=".pdf,.txt,.md,application/pdf,text/plain,image/*" multiple hidden>
       </label>
     </div>
+    <p class="muted small" id="folderHint" hidden></p>
     <input type="search" id="docFilter" class="field" placeholder="Filtra per titolo…">
-    <p id="importProgress" class="muted" hidden></p>
+    <div id="importProgress" class="progress" hidden><div class="progress-text"></div><div class="bar"><div></div></div></div>
     <ul id="docList" class="list"></ul>
-    <p id="emptyDocs" class="empty" hidden>Non c'è ancora niente.<br>Scrivi una nota o aggiungi un PDF per cominciare.</p>
+    <p id="emptyDocs" class="empty" hidden>Non c'è ancora niente.<br>Scrivi una nota, fai una foto o aggiungi un PDF per cominciare.</p>
+  </section>
+
+  <!-- PROMEMORIA -->
+  <section id="view-reminders" class="view">
+    <div class="actions">
+      <button class="primary" id="btnNewReminder">＋ Nuovo promemoria</button>
+    </div>
+    <div id="reminderList"></div>
+    <p id="emptyReminders" class="empty" hidden>Nessun promemoria.<br>Aggiungi scadenze come bollo, assicurazione, revisione, visite…</p>
   </section>
 
   <!-- CERCA -->
@@ -94,9 +108,15 @@
     <button class="link" id="btnBack">‹ Indietro</button>
     <input type="text" id="docTitle" class="field title" placeholder="Titolo">
     <p id="docMeta" class="muted small"></p>
+    <label class="lbl">Cartella
+      <select id="docFolder" class="field"></select>
+    </label>
+    <div id="docImages" class="thumbs"></div>
+    <div id="docOcrInfo" class="muted small" hidden>Testo letto dalla foto: se ci sono errori puoi correggerli qui sotto.</div>
     <textarea id="docText" class="field doctext" placeholder="Scrivi qui…"></textarea>
     <div class="row">
       <button class="primary" id="btnSaveDoc">Salva</button>
+      <button id="btnDocReminder">⏰ Promemoria</button>
       <button class="danger" id="btnDeleteDoc">Elimina</button>
     </div>
   </section>
@@ -106,8 +126,78 @@
   <button data-view="docs" class="active"><span>📚</span>Documenti</button>
   <button data-view="search"><span>🔎</span>Cerca</button>
   <button data-view="ask"><span>💬</span>Chiedi</button>
-  <button data-view="settings"><span>⚙︎</span>Impostazioni</button>
+  <button data-view="reminders"><span>⏰<i id="remBadge" class="badge" hidden></i></span>Promemoria</button>
+  <button data-view="settings"><span>⚙︎</span>Opzioni</button>
 </nav>
+
+<!-- FINESTRA CARTELLA -->
+<dialog id="folderDialog" class="sheet">
+  <form method="dialog" id="folderForm">
+    <h2 id="folderDialogTitle">Nuova cartella</h2>
+    <label class="lbl">Nome
+      <input type="text" id="folderName" class="field" placeholder="Es. Casa, Salute, Auto…" maxlength="40" required>
+    </label>
+    <div class="lbl">Colore</div>
+    <div class="swatches" id="folderColors"></div>
+    <div class="row">
+      <button class="primary" value="save" id="btnFolderSave">Salva</button>
+      <button value="cancel" formnovalidate>Annulla</button>
+      <button class="danger" value="delete" id="btnFolderDelete" formnovalidate>Elimina cartella</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- FINESTRA PROMEMORIA -->
+<dialog id="remDialog" class="sheet">
+  <form method="dialog" id="remForm">
+    <h2 id="remDialogTitle">Nuovo promemoria</h2>
+    <label class="lbl">Cosa ricordare
+      <input type="text" id="remTitle" class="field" placeholder="Es. Pagare il bollo auto" maxlength="120" required>
+    </label>
+    <div class="row">
+      <label class="lbl grow">Giorno
+        <input type="date" id="remDate" class="field" required>
+      </label>
+      <label class="lbl grow">Ora (facoltativa)
+        <input type="time" id="remTime" class="field">
+      </label>
+    </div>
+    <div class="row">
+      <label class="lbl grow">Ripeti
+        <select id="remRepeat" class="field">
+          <option value="">Una volta</option>
+          <option value="month">Ogni mese</option>
+          <option value="year">Ogni anno</option>
+        </select>
+      </label>
+      <label class="lbl grow">Avvisami
+        <select id="remNotice" class="field">
+          <option value="0">Il giorno stesso</option>
+          <option value="1">1 giorno prima</option>
+          <option value="3">3 giorni prima</option>
+          <option value="7" selected>1 settimana prima</option>
+          <option value="30">1 mese prima</option>
+        </select>
+      </label>
+    </div>
+    <label class="lbl">Documento collegato
+      <select id="remDoc" class="field"></select>
+    </label>
+    <label class="lbl">Note
+      <textarea id="remNote" class="field" rows="2" placeholder="Facoltative"></textarea>
+    </label>
+    <div class="row">
+      <button class="primary" value="save">Salva</button>
+      <button value="calendar" id="btnRemCalendar">📅 Metti nel calendario</button>
+      <button value="cancel" formnovalidate>Annulla</button>
+      <button class="danger" value="delete" id="btnRemDelete" formnovalidate>Elimina</button>
+    </div>
+    <p class="muted small">"Metti nel calendario" lo aggiunge al calendario del telefono, così ti arriva l'avviso anche con l'app chiusa.</p>
+  </form>
+</dialog>
+
+<!-- FOTO A SCHERMO INTERO -->
+<div id="imgViewer" class="viewer" hidden><img alt=""></div>
 
 <div id="toast" class="toast" hidden></div>
 <script src="app.js"></script>

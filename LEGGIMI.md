@@ -80,8 +80,15 @@ In alto comparirà **"IA: collegata"**.
 - **Chiedi**: fai una domanda normale ("quando scade la garanzia della lavatrice?"). L'IA risponde e indica da quale documento ha preso l'informazione. Se l'IA non è raggiungibile, ti mostra comunque i risultati della ricerca.
 - **Impostazioni › Esporta archivio**: crea un file con tutti i documenti. Mandalo a tuo padre (WhatsApp, email…) e lui lo apre con **Importa archivio**. Fallo anche ogni tanto come copia di sicurezza.
 
+## Novità della versione 1.1
+
+- **📷 Foto**: fotografa una bolletta, una ricetta o un foglio e l'app legge il testo. Se scegli più foto insieme diventano un solo documento, con una pagina per ogni foto. Funziona anche senza internet, ma la prima volta l'app deve essere aperta con internet per scaricare il "lettore" (circa 10 MB).
+- **PDF scansionati**: adesso l'app legge anche quelli.
+- **Cartelle**: tocca "＋ Cartella" per crearne una. Tocca di nuovo una cartella già selezionata per rinominarla o eliminarla (i documenti non si cancellano). Quello che aggiungi mentre sei dentro una cartella finisce lì.
+- **⏰ Promemoria**: scadenze con avviso in anticipo, anche ripetute ogni mese o ogni anno. Un promemoria si può collegare a un documento. Con "Metti nel calendario" lo aggiungi al calendario del telefono, così ti arriva l'avviso anche con l'app chiusa.
+
 ## Da sapere
 
-- I **PDF scansionati** (foto di fogli) non contengono testo, quindi l'app non ci può cercare dentro. Vanno bene i PDF "veri", quelli in cui puoi selezionare il testo.
+- La lettura delle foto funziona bene con testo stampato e foto dritte e ben illuminate. Con la scrittura a mano sbaglia spesso: controlla il testo letto e correggilo se serve.
 - Se cancelli l'app dal telefono, cancelli anche i documenti. **Esporta prima.**
 - Per aggiornare l'app: carica i file nuovi su GitHub. I telefoni prendono l'aggiornamento la volta dopo che la aprono con internet.
