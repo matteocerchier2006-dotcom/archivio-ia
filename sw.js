@@ -1,5 +1,5 @@
 /* Tiene l'app salvata sul telefono, così si apre anche senza internet. */
-const CACHE = 'archivio-ia-v1.2.0';
+const CACHE = 'archivio-ia-v2.0.0';
 const FILES = [
   './', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',
   'lib/pdf.min.js', 'lib/pdf.worker.min.js',

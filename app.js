@@ -1,7 +1,7 @@
 /* Archivio IA — note e documenti con ricerca offline e domande a un'IA locale (Ollama). */
 'use strict';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '2.0.0';
 const $ = (id) => document.getElementById(id);
 
 /* ---------------- Archivio (IndexedDB) ---------------- */
@@ -10,10 +10,10 @@ const DB = {
   db: null,
   open() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open('archivio-ia', 2);
+      const req = indexedDB.open('archivio-ia', 4);
       req.onupgradeneeded = () => {
         const db = req.result;
-        for (const name of ['docs', 'folders', 'reminders']) {
+        for (const name of ['docs', 'folders', 'reminders', 'chats', 'shop']) {
           if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, { keyPath: 'id' });
         }
       };
@@ -38,7 +38,11 @@ const DB = {
 let docs = [];            // tutti i documenti in memoria
 let folders = [];         // cartelle create dall'utente
 let reminders = [];       // promemoria
-let currentFolder = 'all';// cartella selezionata in Documenti ('all', 'none' o id)
+let chats = [];           // conversazioni salvate con l'IA
+let currentChat = null;   // conversazione aperta adesso
+let currentFolder = 'home';// 'home' = schermata iniziale; altrimenti id cartella o 'all' / 'links' / 'none'
+let shopItems = [];       // lista della spesa
+let chatScope = '';       // cartella in cui cerca l'IA ('' = tutto l'archivio)
 let index = null;         // indice di ricerca
 let currentDocId = null;
 
@@ -137,7 +141,7 @@ function expandTerm(q) {
   return out;
 }
 
-function search(query, limit = 20) {
+function search(query, limit = 20, scope = '') {
   if (!index) buildIndex();
   const qt = [...new Set(tokens(query))];
   if (!qt.length) return { results: [], terms: new Set() };
@@ -147,7 +151,9 @@ function search(query, limit = 20) {
   expanded.forEach((m) => m.forEach((_, w) => allTerms.add(w)));
   const k1 = 1.2, b = 0.75;
   const results = [];
+  const allowed = scope ? new Set(docsIn(scope).map((d) => d.id)) : null;
   for (const c of index.chunks) {
+    if (allowed && !allowed.has(c.docId)) continue;
     let score = 0, hit = 0;
     expanded.forEach((m) => {
       let best = 0;
@@ -186,12 +192,14 @@ function snippet(text, terms, size = 260) {
 }
 
 /* ---------------- Interfaccia generale ---------------- */
-const TITLES = { docs: 'Documenti', search: 'Cerca', ask: 'Chiedi', reminders: 'Promemoria', settings: 'Impostazioni', doc: '' };
+const TITLES = { docs: 'Archivio', shop: 'Lista della spesa', search: 'Cerca', ask: 'Chiedi all\'IA', reminders: 'Promemoria', settings: 'Impostazioni', doc: '' };
 let lastTab = 'docs';
 
 function show(view) {
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + view));
-  document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
+  const tab = view === 'shop' ? 'docs' : view;
+  document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === tab));
+  Voice.stop();
   $('viewTitle').textContent = view === 'doc' ? ($('docTitle').value || 'Nota') : TITLES[view];
   if (view !== 'doc') lastTab = view;
   if (view === 'search') setTimeout(() => $('searchInput').focus(), 50);
@@ -199,6 +207,8 @@ function show(view) {
   if (view === 'settings') showStorage();
   if (view === 'reminders') renderReminders();
   if (view === 'docs') renderDocs();
+  if (view === 'shop') renderShop();
+  if (view === 'ask') renderScope();
   window.scrollTo(0, 0);
 }
 
@@ -264,35 +274,21 @@ function newLink(prefill = {}) {
 }
 
 /* ---------------- Cartelle ---------------- */
-const FOLDER_COLORS = ['#2f5d50', '#3b6fb6', '#b3402e', '#c27c0e', '#7a4fb0', '#2e8b8b', '#c2477a', '#6b716d'];
+const FOLDER_COLORS = ['#5b4cf0', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#8b5cf6', '#64748b'];
+const FOLDER_EMOJIS = ['📁', '🏠', '💊', '🚗', '💡', '🧾', '🍝', '🎬', '👵', '🐶', '🎓', '💼', '🏦', '🛠️', '✈️', '❤️', '📷', '🌿', '⚽', '🎁', '📚', '🧸', '🏥', '💰'];
 const folderById = (id) => folders.find((f) => f.id === id);
-const dot = (color) => `<span class="dot" style="background:${esc(color || '#6b716d')}"></span>`;
+const dot = (color) => `<span class="dot" style="background:${esc(color || '#64748b')}"></span>`;
+const folderEmoji = (f) => (f && f.emoji) || '📁';
+const sortedFolders = () => [...folders].sort((a, b) => a.name.localeCompare(b.name, 'it'));
 
 function folderTag(d) {
   const f = d.folderId && folderById(d.folderId);
   return f ? ` · <span class="fold">${dot(f.color)}${esc(f.name)}</span>` : '';
 }
 
-function renderFolders() {
-  const count = (id) => docs.filter((d) => (id === 'none' ? !folderById(d.folderId) : d.folderId === id)).length;
-  const sorted = [...folders].sort((a, b) => a.name.localeCompare(b.name, 'it'));
-  if (!['all', 'none', 'links'].includes(currentFolder) && !folderById(currentFolder)) currentFolder = 'all';
-  let html = `<button class="chip ${currentFolder === 'all' ? 'active' : ''}" data-folder="all">Tutti · ${docs.length}</button>`;
-  const nLinks = docs.filter((d) => d.type === 'link').length;
-  if (nLinks || currentFolder === 'links') html += `<button class="chip ${currentFolder === 'links' ? 'active' : ''}" data-folder="links">🎬 Video e link · ${nLinks}</button>`;
-  html += sorted.map((f) => `<button class="chip ${currentFolder === f.id ? 'active' : ''}" data-folder="${f.id}">${dot(f.color)} ${esc(f.name)} · ${count(f.id)}</button>`).join('');
-  const loose = count('none');
-  if (folders.length && loose) html += `<button class="chip ${currentFolder === 'none' ? 'active' : ''}" data-folder="none">Senza cartella · ${loose}</button>`;
-  html += '<button class="chip add" data-folder="new">＋ Cartella</button>';
-  $('folderChips').innerHTML = html;
-  const f = folderById(currentFolder);
-  $('folderHint').hidden = !f;
-  if (f) $('folderHint').textContent = 'Tocca di nuovo la cartella per rinominarla o eliminarla. Quello che aggiungi ora finisce qui.';
-}
-
 function fillFolderSelect(sel, value) {
   sel.innerHTML = '<option value="">Nessuna cartella</option>' +
-    [...folders].sort((a, b) => a.name.localeCompare(b.name, 'it')).map((f) => `<option value="${f.id}">${esc(f.name)}</option>`).join('') +
+    sortedFolders().map((f) => `<option value="${f.id}">${folderEmoji(f)} ${esc(f.name)}</option>`).join('') +
     '<option value="__new">＋ Nuova cartella…</option>';
   sel.value = value && folderById(value) ? value : '';
 }
@@ -305,8 +301,13 @@ function folderDialog(folder) {
     $('folderName').value = folder ? folder.name : '';
     $('btnFolderDelete').hidden = !folder;
     const color = folder ? folder.color : FOLDER_COLORS[folders.length % FOLDER_COLORS.length];
+    const emoji = folder ? folderEmoji(folder) : '📁';
     $('folderColors').innerHTML = FOLDER_COLORS.map((c, i) =>
       `<input type="radio" name="fcolor" id="fc${i}" value="${c}" ${c === color ? 'checked' : ''}><label for="fc${i}" style="background:${c}"></label>`).join('');
+    // se la cartella ha un colore vecchio che non è più in lista, lo teniamo selezionato
+    if (!FOLDER_COLORS.includes(color)) $('folderColors').insertAdjacentHTML('afterbegin', `<input type="radio" name="fcolor" id="fcold" value="${esc(color)}" checked><label for="fcold" style="background:${esc(color)}"></label>`);
+    $('folderEmojis').innerHTML = FOLDER_EMOJIS.map((e, i) =>
+      `<input type="radio" name="femoji" id="fe${i}" value="${e}" ${e === emoji ? 'checked' : ''}><label for="fe${i}">${e}</label>`).join('');
     dlg.returnValue = '';
     dlg.onclose = async () => {
       const action = dlg.returnValue;
@@ -314,11 +315,12 @@ function folderDialog(folder) {
         const name = $('folderName').value.trim();
         if (!name) return resolve(null);
         const c = (dlg.querySelector('input[name=fcolor]:checked') || {}).value || FOLDER_COLORS[0];
+        const e = (dlg.querySelector('input[name=femoji]:checked') || {}).value || '📁';
         const f = folder || { id: uid(), created: Date.now() };
-        f.name = name; f.color = c; f.updated = Date.now();
+        f.name = name; f.color = c; f.emoji = e; f.updated = Date.now();
         if (!folder) folders.push(f);
         await DB.put(f, 'folders');
-        renderFolders();
+        renderDocs();
         resolve(f);
       } else if (action === 'delete' && folder) {
         const n = docs.filter((d) => d.folderId === folder.id).length;
@@ -326,7 +328,8 @@ function folderDialog(folder) {
         for (const d of docs.filter((x) => x.folderId === folder.id)) { d.folderId = null; d.updated = Date.now(); await DB.put(d); }
         folders = folders.filter((x) => x.id !== folder.id);
         await DB.del(folder.id, 'folders');
-        if (currentFolder === folder.id) currentFolder = 'all';
+        if (currentFolder === folder.id) currentFolder = 'home';
+        if (chatScope === folder.id) chatScope = '';
         renderDocs();
         toast('Cartella eliminata');
         resolve(null);
@@ -337,24 +340,85 @@ function folderDialog(folder) {
   });
 }
 
-/* ---------------- Lista documenti ---------------- */
+/* ---------------- Home e cartelle ---------------- */
+// cartelle "speciali" che non sono vere cartelle
+const SPECIAL = {
+  all: { name: 'Tutti i documenti', emoji: '📚', color: '#64748b' },
+  links: { name: 'Video e link', emoji: '🎬', color: '#0ea5e9' },
+  none: { name: 'Senza cartella', emoji: '🗂️', color: '#94a3b8' },
+};
+const folderMeta = (id) => folderById(id) || SPECIAL[id] || SPECIAL.all;
+function docsIn(id) {
+  if (id === 'all') return docs;
+  if (id === 'links') return docs.filter((d) => d.type === 'link');
+  if (id === 'none') return docs.filter((d) => !folderById(d.folderId));
+  return docs.filter((d) => d.folderId === id);
+}
+
+function docItem(d, showFolder) {
+  return `<li data-id="${d.id}">${docIcon(d)}<div class="body"><div class="t">${esc(d.title || 'Senza titolo')}</div>` +
+    `<div class="s">${typeLabel(d)} · ${fmtDate(d.updated)}${showFolder ? folderTag(d) : ''}</div></div>` +
+    (d.type === 'link' ? '<button class="go" data-open="1" type="button" aria-label="Apri">▶︎</button>' : '') + '</li>';
+}
+
+function greeting() {
+  const h = new Date().getHours();
+  return h < 5 ? 'Buonanotte' : h < 13 ? 'Buongiorno' : h < 18 ? 'Buon pomeriggio' : 'Buonasera';
+}
+
 function renderDocs() {
-  renderFolders();
+  if (currentFolder !== 'home' && !SPECIAL[currentFolder] && !folderById(currentFolder)) currentFolder = 'home';
+  const home = currentFolder === 'home';
+  $('hero').hidden = !home;
+  $('homeOnly').hidden = !home;
+  $('folderHead').hidden = home;
+  $('folderOnly').hidden = home;
   renderAlertBar();
+  if (home) {
+    $('viewTitle').textContent = 'Archivio';
+    $('hello').textContent = greeting() + ' 👋';
+    const toBuy = shopItems.filter((i) => !i.done).length;
+    $('heroSub').textContent = `${docs.length} ${docs.length === 1 ? 'documento' : 'documenti'} · ${folders.length} ${folders.length === 1 ? 'cartella' : 'cartelle'}` +
+      (dueCount() ? ` · ${dueCount()} promemoria` : '');
+    $('shopCount').textContent = toBuy ? `${toBuy} ${toBuy === 1 ? 'cosa' : 'cose'} da comprare` : 'Niente da comprare';
+    const card = (id, m, n) => `<button class="fcard" type="button" data-folder="${id}" style="--c:${esc(m.color || '#64748b')}">` +
+      `<span class="fe">${m.emoji || '📁'}</span><span><span class="fn">${esc(m.name)}</span><br><span class="fc">${n} ${n === 1 ? 'elemento' : 'elementi'}</span></span></button>`;
+    let html = sortedFolders().map((f) => card(f.id, { ...f, emoji: folderEmoji(f) }, docsIn(f.id).length)).join('');
+    html += card('all', SPECIAL.all, docs.length);
+    const nLinks = docsIn('links').length;
+    if (nLinks) html += card('links', SPECIAL.links, nLinks);
+    const loose = docsIn('none').length;
+    if (folders.length && loose) html += card('none', SPECIAL.none, loose);
+    html += '<button class="fcard add" type="button" data-folder="new"><span class="fe">＋</span><span class="fn">Nuova cartella</span></button>';
+    $('folderGrid').innerHTML = html;
+    const recent = [...docs].sort((a, b) => b.updated - a.updated).slice(0, 5);
+    $('recentList').innerHTML = recent.map((d) => docItem(d, true)).join('');
+    $('recentTitle').hidden = !recent.length;
+    $('emptyDocs').hidden = docs.length > 0;
+    $('emptyDocs').innerHTML = 'Non c\'è ancora niente.<br>Scrivi una nota, fai una foto, salva un video o aggiungi un PDF per cominciare.';
+    return;
+  }
+  // dentro una cartella
+  const m = folderMeta(currentFolder);
+  const real = !!folderById(currentFolder);
+  $('viewTitle').textContent = m.name;
+  $('fName').textContent = m.name;
+  $('fIcon').textContent = real ? folderEmoji(m) : m.emoji;
+  $('fIcon').style.background = `linear-gradient(135deg, ${m.color}, ${m.color}cc)`;
+  $('btnFolderEdit').hidden = !real;
+  $('btnAskFolder').hidden = !real && currentFolder !== 'links';
   const f = norm($('docFilter').value.trim());
-  const list = docs.filter((d) => {
-    if (currentFolder === 'none' && folderById(d.folderId)) return false;
-    if (currentFolder === 'links' && d.type !== 'link') return false;
-    if (folderById(currentFolder) && d.folderId !== currentFolder) return false;
-    return !f || norm(d.title).includes(f);
-  }).sort((a, b) => b.updated - a.updated);
-  $('docList').innerHTML = list.map((d) => `<li data-id="${d.id}">${docIcon(d)}<div class="body"><div class="t">${esc(d.title || 'Senza titolo')}</div>` +
-    `<div class="s">${typeLabel(d)} · ${fmtDate(d.updated)}${folderById(currentFolder) ? '' : folderTag(d)}</div></div>` +
-    (d.type === 'link' ? '<button class="go" data-open="1" aria-label="Apri">▶︎</button>' : '') + '</li>').join('');
+  const list = docsIn(currentFolder).filter((d) => !f || norm(d.title).includes(f)).sort((a, b) => b.updated - a.updated);
+  $('docList').innerHTML = list.map((d) => docItem(d, !real)).join('');
   $('emptyDocs').hidden = list.length > 0;
-  $('emptyDocs').innerHTML = docs.length
-    ? 'Questa cartella è vuota.<br>Quello che aggiungi adesso finisce qui dentro.'
-    : 'Non c\'è ancora niente.<br>Scrivi una nota, fai una foto o aggiungi un PDF per cominciare.';
+  $('emptyDocs').innerHTML = f ? 'Nessun documento con questo titolo.' : 'Questa cartella è vuota.<br>Usa i pulsanti qui sopra: quello che aggiungi finisce qui dentro.';
+}
+
+function openFolder(id) {
+  currentFolder = id;
+  $('docFilter').value = '';
+  renderDocs();
+  window.scrollTo(0, 0);
 }
 
 function docById(id) { return docs.find((d) => d.id === id); }
@@ -364,7 +428,10 @@ function docIcon(d) {
     if (li.ytId) return `<img class="mini" src="https://i.ytimg.com/vi/${li.ytId}/mqdefault.jpg" alt="" onerror="this.outerHTML='<span class=&quot;ico&quot; style=&quot;background:${li.color}&quot;>${li.emoji}</span>'">`;
     return `<span class="ico" style="background:${li.color}">${li.emoji}</span>`;
   }
-  return d.thumb ? `<img class="mini" src="${d.thumb}" alt="">` : '';
+  if (d.thumb) return `<img class="mini" src="${d.thumb}" alt="">`;
+  if (d.type === 'pdf') return '<span class="ico pdf">📕</span>';
+  if (d.type === 'file') return '<span class="ico file">📄</span>';
+  return '<span class="ico note">✏️</span>';
 }
 const defaultFolder = () => (folderById(currentFolder) ? currentFolder : null);
 
@@ -717,9 +784,9 @@ function renderAlertBar() {
     bar = document.createElement('div');
     bar.id = 'alertBar'; bar.className = 'alertbar';
     bar.onclick = () => show('reminders');
-    $('view-docs').prepend(bar);
+    $('alertSlot').appendChild(bar);
   }
-  bar.innerHTML = `⏰ Hai <b>${n}</b> promemoria ${over ? `(${over} scadut${over === 1 ? 'o' : 'i'})` : 'in arrivo'} · <u>vedi</u>`;
+  bar.innerHTML = `<span style="font-size:22px">⏰</span><span style="flex:1">Hai <b>${n}</b> promemoria ${over ? `(${over} scadut${over === 1 ? 'o' : 'i'})` : 'in arrivo'}</span><span class="chev">›</span>`;
   updateBadge();
 }
 
@@ -852,6 +919,166 @@ function addToCalendar(r) {
   }
 }
 
+/* ---------------- Lettura ad alta voce (funziona anche senza internet) ---------------- */
+const Voice = {
+  btn: null,
+  rate() { try { return +(localStorage.getItem('archivio-rate') || 1); } catch (e) { return 1; } },
+  voice() {
+    if (!('speechSynthesis' in window)) return null;
+    const vs = speechSynthesis.getVoices().filter((v) => /^it/i.test(v.lang));
+    // preferisce le voci migliori se ci sono
+    return vs.find((v) => /premium|enhanced|natural|neural/i.test(v.name)) || vs.find((v) => v.localService) || vs[0] || null;
+  },
+  clean(t) {
+    return String(t || '')
+      .replace(/\[\d+\]/g, '')
+      .replace(/https?:\/\/\S+/g, 'link')
+      .replace(/[*_#`>]+/g, '')
+      .replace(/^\s*[-•·]\s+/gm, '')
+      .replace(/—\s*(Pagina|Foto)\s*(\d+)\s*—/g, '$1 $2.')
+      .replace(/[ \t]+/g, ' ')
+      .trim();
+  },
+  // divide in frasi corte: alcuni telefoni si bloccano con testi lunghi
+  pieces(t) {
+    const out = [];
+    for (const para of t.split(/\n+/)) {
+      const sentences = para.match(/[^.!?;:]+[.!?;:]*/g) || [para];
+      let buf = '';
+      for (const s of sentences) {
+        if ((buf + s).length > 220 && buf) { out.push(buf.trim()); buf = ''; }
+        buf += s;
+      }
+      if (buf.trim()) out.push(buf.trim());
+    }
+    return out.filter((p) => /[\p{L}\p{N}]/u.test(p));
+  },
+  speak(text, btn) {
+    if (!('speechSynthesis' in window)) return toast('Questo telefono non permette la lettura ad alta voce');
+    const same = this.btn && this.btn === btn;
+    this.stop();
+    if (same) return; // secondo tocco = ferma
+    const parts = this.pieces(this.clean(text));
+    if (!parts.length) return toast('Non c\'è niente da leggere');
+    this.btn = btn || null;
+    if (btn) { btn.dataset.label = btn.textContent; btn.textContent = '⏹ Ferma'; btn.classList.add('on'); }
+    const v = this.voice();
+    parts.forEach((p, i) => {
+      const u = new SpeechSynthesisUtterance(p);
+      u.lang = 'it-IT';
+      if (v) u.voice = v;
+      u.rate = this.rate();
+      if (i === parts.length - 1) u.onend = () => { if (this.btn === btn) this.reset(); };
+      u.onerror = () => { if (this.btn === btn) this.reset(); };
+      speechSynthesis.speak(u);
+    });
+  },
+  reset() {
+    if (this.btn) { this.btn.textContent = this.btn.dataset.label || '🔊 Leggi'; this.btn.classList.remove('on'); }
+    this.btn = null;
+  },
+  stop() {
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    this.reset();
+  },
+};
+if ('speechSynthesis' in window) { speechSynthesis.getVoices(); speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices(); }
+
+/* ---------------- Lista della spesa ---------------- */
+function renderShop() {
+  const todo = shopItems.filter((i) => !i.done).sort((a, b) => a.created - b.created);
+  const done = shopItems.filter((i) => i.done).sort((a, b) => (b.updated || 0) - (a.updated || 0));
+  const li = (i) => `<li data-id="${i.id}" class="${i.done ? 'done' : ''}"><span class="box">${i.done ? '✓' : ''}</span>` +
+    `<span class="txt">${esc(i.text)}</span><button class="x" type="button" data-del="1" aria-label="Togli">✕</button></li>`;
+  $('shopList').innerHTML = todo.map(li).join('') + (done.length ? `<li class="sep">Nel carrello · ${done.length}</li>` + done.map(li).join('') : '');
+  $('emptyShop').hidden = shopItems.length > 0;
+  $('shopActions').hidden = !shopItems.length;
+  $('btnShopClear').hidden = !done.length;
+}
+
+async function addShopItems(texts) {
+  const have = new Set(shopItems.filter((i) => !i.done).map((i) => norm(i.text)));
+  let n = 0;
+  for (const raw of texts) {
+    const t = raw.replace(/\s+/g, ' ').trim().slice(0, 120);
+    if (!t || have.has(norm(t))) continue;
+    have.add(norm(t));
+    const now = Date.now();
+    const item = { id: uid(), text: t, done: false, created: now + n, updated: now };
+    shopItems.push(item);
+    await DB.put(item, 'shop');
+    n++;
+  }
+  return n;
+}
+
+// trova gli ingredienti o le cose da comprare dentro una risposta dell'IA
+function parseListItems(answer) {
+  const lines = String(answer || '').split('\n');
+  const itemRe = /^\s*(?:[-*•·]|\d+[.)])\s+(.+)$/;
+  const clean = (t) => t.replace(/\*\*/g, '').replace(/\[\d+\]/g, '').replace(/\s*[:：]\s*$/, '').trim();
+  const start = lines.findIndex((l) => /ingredient|occorrente|ti serv|da comprare|lista della spesa|spesa/i.test(l));
+  const collect = (from, onlyBullets) => {
+    const out = [];
+    for (let i = from; i < lines.length; i++) {
+      const m = lines[i].match(itemRe);
+      if (m) {
+        if (onlyBullets && /^\s*\d/.test(lines[i])) continue;
+        out.push(clean(m[1]));
+      } else if (from > 0 && out.length && lines[i].trim()) break; // fine della lista degli ingredienti
+    }
+    return out;
+  };
+  let items = start >= 0 ? collect(start + 1, false) : [];
+  if (items.length < 2) items = collect(0, true);
+  return items.filter((t) => t.length > 1 && t.length <= 80);
+}
+
+function shareShop() {
+  const todo = shopItems.filter((i) => !i.done);
+  if (!todo.length) return toast('Non c\'è niente da comprare');
+  const text = '🛒 Lista della spesa\n' + todo.map((i) => '• ' + i.text).join('\n');
+  if (navigator.share) {
+    navigator.share({ text }).catch(() => {});
+  } else if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(() => toast('Lista copiata: incollala su WhatsApp')).catch(() => toast('Non riesco a copiare'));
+  }
+}
+
+/* ---------------- Cartella in cui cerca l'IA ---------------- */
+function renderScope() {
+  const sel = $('askScope');
+  if (chatScope && !folderById(chatScope) && chatScope !== 'links') chatScope = '';
+  sel.innerHTML = '<option value="">📚 Tutto l\'archivio</option>' +
+    sortedFolders().map((f) => `<option value="${f.id}">${folderEmoji(f)} ${esc(f.name)}</option>`).join('') +
+    (docsIn('links').length ? '<option value="links">🎬 Video e link</option>' : '');
+  sel.value = chatScope;
+  $('scopeRow').hidden = chatMode === 'free';
+}
+function scopeName() { return chatScope ? folderMeta(chatScope).name : ''; }
+
+function answerActions(bubble, answer) {
+  const canShop = parseListItems(answer).length >= 2;
+  const bar = document.createElement('div');
+  bar.className = 'bactions';
+  bar.innerHTML = '<button type="button" data-act="speak">🔊 Leggi</button>' +
+    (canShop ? '<button type="button" data-act="shop">🛒 Alla spesa</button>' : '') +
+    '<button type="button" data-act="copy">📋 Copia</button>';
+  bar.onclick = async (e) => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    if (b.dataset.act === 'speak') Voice.speak(answer, b);
+    if (b.dataset.act === 'shop') {
+      const n = await addShopItems(parseListItems(answer));
+      toast(n ? `Aggiunt${n === 1 ? 'a 1 cosa' : `e ${n} cose`} alla lista della spesa 🛒` : 'Erano già tutte nella lista', 3000);
+    }
+    if (b.dataset.act === 'copy') {
+      try { await navigator.clipboard.writeText(answer); toast('Risposta copiata'); } catch (err) { toast('Non riesco a copiare'); }
+    }
+  };
+  bubble.appendChild(bar);
+}
+
 /* ---------------- Ricerca (schermata Cerca) ---------------- */
 let searchTimer;
 function runSearch() {
@@ -950,7 +1177,7 @@ function sourcesHtml(sources) {
   if (!sources.length) return '';
   return '<div class="sources"><b>Fonti</b>' + sources.map((s, i) => {
     const d = docById(s.docId);
-    return `<a data-src="${i}">[${i + 1}] ${esc(d ? d.title : '?')}${s.page ? ' · pag. ' + s.page : ''}</a>`;
+    return `<a data-src="${i}">[${i + 1}] ${esc(d ? d.title : (s.title || '?'))}${s.page ? ' · pag. ' + s.page : ''}</a>`;
   }).join('') + '</div>';
 }
 
@@ -968,17 +1195,87 @@ function bindSources(bubble, sources, terms) {
     const t = e.target.closest('[data-src]');
     if (!t) return;
     const s = sources[+t.dataset.src];
-    if (s) openDoc(s.docId, terms);
+    if (!s) return;
+    if (!docById(s.docId)) return toast('Questo documento è stato eliminato');
+    openDoc(s.docId, terms);
   });
 }
 
 let chatMode = 'docs'; // 'docs' = risponde sui documenti, 'free' = domanda libera
 
+/* ---------------- Chat salvate ---------------- */
+async function saveChatTurn(q, answer, sources) {
+  try {
+    const now = Date.now();
+    if (!currentChat) {
+      currentChat = { id: uid(), mode: chatMode, scope: chatMode === 'free' ? '' : chatScope, title: q.replace(/\s+/g, ' ').slice(0, 70), messages: [], created: now };
+      chats.push(currentChat);
+    }
+    currentChat.messages.push(
+      { role: 'user', content: q },
+      { role: 'assistant', content: answer, sources: sources.map((c) => ({ docId: c.docId, page: c.page, text: c.text, title: (docById(c.docId) || {}).title })) },
+    );
+    currentChat.scope = chatMode === 'free' ? '' : chatScope;
+    currentChat.updated = now;
+    await DB.put(currentChat, 'chats');
+  } catch (e) { console.error(e); }
+}
+
+function clearChatView() {
+  chatHistory = [];
+  currentChat = null;
+  [...$('chat').querySelectorAll('.bubble:not(.intro)')].forEach((b) => b.remove());
+}
+
+function setChatMode(m, silent) {
+  chatMode = m === 'free' ? 'free' : 'docs';
+  try { localStorage.setItem('archivio-chatmode', chatMode); } catch (e) { /* niente */ }
+  document.querySelectorAll('#chatMode button').forEach((b) => b.classList.toggle('active', b.dataset.mode === chatMode));
+  $('chatIntro').innerHTML = chatMode === 'free'
+    ? 'Chiedimi quello che vuoi: una ricetta, un consiglio, una spiegazione, una traduzione, un messaggio da scrivere…<br><span class="muted small">Non guardo i tuoi documenti e non ho internet: per notizie, prezzi e orari controlla sempre.</span>'
+    : 'Fammi una domanda sui vostri documenti. Rispondo usando solo quello che c\'è dentro l\'archivio.<br><span class="muted small">Se l\'IA non è raggiungibile, ti mostro comunque i risultati della ricerca.</span>';
+  $('askInput').placeholder = chatMode === 'free' ? 'Chiedi quello che vuoi…' : 'Scrivi una domanda sui documenti…';
+  if ($('scopeRow')) $('scopeRow').hidden = chatMode === 'free';
+  if (!silent) clearChatView();
+}
+
+function openChat(id) {
+  const c = chats.find((x) => x.id === id);
+  if (!c) return;
+  setChatMode(c.mode, true);
+  chatScope = c.scope && (folderById(c.scope) || c.scope === 'links') ? c.scope : '';
+  clearChatView();
+  currentChat = c;
+  for (const m of c.messages) {
+    if (m.role === 'user') addBubble('user', esc(m.content));
+    else {
+      const src = m.sources || [];
+      const b = addBubble('ai', renderAnswer(m.content, src) + sourcesHtml(src));
+      bindSources(b, src, new Set());
+      answerActions(b, m.content);
+    }
+    chatHistory.push({ role: m.role, content: m.content });
+  }
+  show('ask');
+  setTimeout(() => { const last = $('chat').lastElementChild; if (last) last.scrollIntoView({ block: 'end' }); }, 50);
+}
+
+function renderChatList() {
+  const list = [...chats].sort((a, b) => b.updated - a.updated);
+  $('chatList').innerHTML = list.length ? list.map((c) => {
+    const n = c.messages.filter((m) => m.role === 'user').length;
+    return `<li data-id="${c.id}"><div class="body"><div class="t">${esc(c.title)}</div>` +
+      `<div class="s">${c.mode === 'free' ? '💬 Libera' : '📚 Documenti'} · ${fmtDate(c.updated)} · ${n} ${n === 1 ? 'domanda' : 'domande'}</div></div>` +
+      '<button type="button" class="del" data-del="1" aria-label="Elimina">🗑</button></li>';
+  }).join('') : '<p class="empty">Nessuna chat salvata.<br>Le conversazioni con l\'IA si salvano da sole qui.</p>';
+}
+
 const FREE_PROMPT = `Sei un assistente gentile e disponibile per una famiglia italiana.
 Rispondi SEMPRE in italiano, in modo semplice, chiaro e non troppo lungo.
 Puoi parlare di qualsiasi argomento: ricette, consigli, spiegazioni, traduzioni, messaggi da scrivere.
 Non hai accesso a internet: se una domanda riguarda notizie recenti, prezzi o orari attuali, dillo e suggerisci di controllare.
-Se non sei sicuro di qualcosa, dillo onestamente invece di inventare.`;
+Se non sei sicuro di qualcosa, dillo onestamente invece di inventare.
+Quando dai una ricetta, scrivi prima la riga "Ingredienti:" e sotto l'elenco degli ingredienti, uno per riga, ognuno che inizia con "- ".`;
 
 async function ask(question) {
   addBubble('user', esc(question));
@@ -986,8 +1283,9 @@ async function ask(question) {
   const free = chatMode === 'free';
   // per le domande di seguito ("e quando scade?") usa anche la domanda precedente
   const prevQ = chatHistory.filter((m) => m.role === 'user').slice(-1)[0];
-  let { results, terms } = search(q, settings.k);
-  if (results.length < 2 && prevQ) ({ results, terms } = search(prevQ.content + ' ' + q, settings.k));
+  const scope = free ? '' : chatScope;
+  let { results, terms } = search(q, settings.k, scope);
+  if (results.length < 2 && prevQ) ({ results, terms } = search(prevQ.content + ' ' + q, settings.k, scope));
   const found = results.map((r) => r.chunk);
   const sources = free ? [] : found;
 
@@ -1016,7 +1314,7 @@ async function ask(question) {
         const extra = d.type === 'link' ? `, link: ${d.url}` : '';
         return `[${i + 1}] Documento: "${d.title}"${c.page ? `, pagina ${c.page}` : ''}${extra}\n${c.text}`;
       }).join('\n\n---\n\n')
-      : '(Nessun estratto trovato per questa domanda.)';
+      : `(Nessun estratto trovato per questa domanda${scope ? ` nella cartella "${scopeName()}"` : ''}.)`;
     messages = [
       { role: 'system', content: SYSTEM_PROMPT },
       ...chatHistory.slice(-6),
@@ -1055,7 +1353,9 @@ async function ask(question) {
     }
     bubble.classList.remove('typing');
     bubble.innerHTML = renderAnswer(answer || '(nessuna risposta)', sources) + sourcesHtml(sources);
+    if (answer) answerActions(bubble, answer);
     chatHistory.push({ role: 'user', content: q }, { role: 'assistant', content: answer });
+    saveChatTurn(q, answer, sources);
   } catch (e) {
     bubble.classList.remove('typing');
     bubble.innerHTML = (answer ? renderAnswer(answer, sources) + '<br>' : '') +
@@ -1067,7 +1367,7 @@ async function ask(question) {
 
 /* ---------------- Esporta / importa ---------------- */
 async function exportAll() {
-  const data = JSON.stringify({ app: 'archivio-ia', version: 2, exported: Date.now(), docs, folders, reminders });
+  const data = JSON.stringify({ app: 'archivio-ia', version: 4, exported: Date.now(), docs, folders, reminders, chats, shop: shopItems });
   const name = `archivio-${new Date().toISOString().slice(0, 10)}.json`;
   const file = new File([data], name, { type: 'application/json' });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -1105,12 +1405,15 @@ async function importAll(file) {
     const f = await mergeInto(folders, data.folders, 'folders');
     const d = await mergeInto(docs, data.docs, 'docs');
     const r = await mergeInto(reminders, data.reminders, 'reminders');
+    const c = await mergeInto(chats, data.chats, 'chats');
+    await mergeInto(shopItems, data.shop, 'shop');
     index = null;
     renderDocs(); renderReminders();
     const parts = [d.added === 1 ? '1 documento nuovo' : `${d.added} documenti nuovi`];
     if (d.updated) parts.push(`${d.updated} aggiornati`);
     if (f.added) parts.push(f.added === 1 ? '1 cartella' : `${f.added} cartelle`);
     if (r.added) parts.push(`${r.added} promemoria`);
+    if (c.added) parts.push(c.added === 1 ? '1 chat' : `${c.added} chat`);
     toast('Importati: ' + parts.join(', '), 4000);
   } catch (e) {
     console.error(e);
@@ -1141,6 +1444,8 @@ async function init() {
   docs = await DB.all() || [];
   folders = await DB.all('folders') || [];
   reminders = await DB.all('reminders') || [];
+  chats = await DB.all('chats') || [];
+  shopItems = await DB.all('shop') || [];
   renderDocs();
   checkAI();
   // controlla le scadenze ogni volta che si torna sull'app
@@ -1150,7 +1455,11 @@ async function init() {
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
-  document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => show(b.dataset.view)));
+  document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => {
+    // toccare "Home" quando sei già nell'archivio riporta alla schermata iniziale
+    if (b.dataset.view === 'docs' && lastTab === 'docs' && $('view-docs').classList.contains('active')) currentFolder = 'home';
+    show(b.dataset.view);
+  }));
   $('btnNewNote').onclick = () => { newDocType = 'note'; openDoc(null); };
   $('btnNewLink').onclick = () => newLink();
   $('docList').onclick = (e) => {
@@ -1172,23 +1481,27 @@ async function init() {
   };
 
   // modalità della chat
-  const setMode = (m, silent) => {
-    chatMode = m === 'free' ? 'free' : 'docs';
-    try { localStorage.setItem('archivio-chatmode', chatMode); } catch (e) { /* niente */ }
-    document.querySelectorAll('#chatMode button').forEach((b) => b.classList.toggle('active', b.dataset.mode === chatMode));
-    $('chatIntro').innerHTML = chatMode === 'free'
-      ? 'Chiedimi quello che vuoi: una ricetta, un consiglio, una spiegazione, una traduzione, un messaggio da scrivere…<br><span class="muted small">Non guardo i tuoi documenti e non ho internet: per notizie, prezzi e orari controlla sempre.</span>'
-      : 'Fammi una domanda sui vostri documenti. Rispondo usando solo quello che c\'è dentro l\'archivio.<br><span class="muted small">Se l\'IA non è raggiungibile, ti mostro comunque i risultati della ricerca.</span>';
-    $('askInput').placeholder = chatMode === 'free' ? 'Chiedi quello che vuoi…' : 'Scrivi una domanda sui documenti…';
-    if (!silent) {
-      chatHistory = [];
-      [...$('chat').querySelectorAll('.bubble:not(.intro)')].forEach((b) => b.remove());
-    }
-  };
   let savedMode = 'docs';
   try { savedMode = localStorage.getItem('archivio-chatmode') || 'docs'; } catch (e) { /* niente */ }
-  setMode(savedMode, true);
-  $('chatMode').onclick = (e) => { const b = e.target.closest('[data-mode]'); if (b && b.dataset.mode !== chatMode) setMode(b.dataset.mode); };
+  setChatMode(savedMode, true);
+  $('chatMode').onclick = (e) => { const b = e.target.closest('[data-mode]'); if (b && b.dataset.mode !== chatMode) setChatMode(b.dataset.mode); };
+  $('btnChats').onclick = () => { renderChatList(); $('chatsDialog').showModal(); };
+  $('chatList').onclick = async (e) => {
+    const li = e.target.closest('li[data-id]');
+    if (!li) return;
+    const c = chats.find((x) => x.id === li.dataset.id);
+    if (!c) return;
+    if (e.target.closest('[data-del]')) {
+      if (!confirm(`Eliminare la chat "${c.title}"?`)) return;
+      chats = chats.filter((x) => x.id !== c.id);
+      await DB.del(c.id, 'chats');
+      if (currentChat && currentChat.id === c.id) clearChatView();
+      renderChatList();
+      return;
+    }
+    $('chatsDialog').close();
+    openChat(c.id);
+  };
 
   // arrivato dal tasto "Condividi" di Facebook/YouTube (Android)
   const sp = new URLSearchParams(location.search);
@@ -1207,17 +1520,78 @@ async function init() {
   $('btnDeleteDoc').onclick = deleteDoc;
 
   // cartelle
-  $('folderChips').onclick = async (e) => {
+  const newFolder = async () => {
+    const f = await folderDialog(null);
+    if (f) { openFolder(f.id); toast(`Cartella "${f.name}" creata`); }
+  };
+  $('folderGrid').onclick = (e) => {
     const b = e.target.closest('[data-folder]');
     if (!b) return;
-    const id = b.dataset.folder;
-    if (id === 'new') {
-      const f = await folderDialog(null);
-      if (f) { currentFolder = f.id; renderDocs(); toast(`Cartella "${f.name}" creata`); }
-    } else if (id === currentFolder && folderById(id)) {
-      await folderDialog(folderById(id));
-      renderDocs();
-    } else { currentFolder = id; renderDocs(); }
+    if (b.dataset.folder === 'new') newFolder(); else openFolder(b.dataset.folder);
+  };
+  $('btnNewFolder').onclick = newFolder;
+  $('btnFolderBack').onclick = () => openFolder('home');
+  $('btnFolderEdit').onclick = async () => { const f = folderById(currentFolder); if (f) { await folderDialog(f); renderDocs(); } };
+  $('btnAskFolder').onclick = () => {
+    const changed = chatMode !== 'docs' || chatScope !== currentFolder;
+    chatScope = currentFolder;
+    if (changed) setChatMode('docs');
+    show('ask');
+    toast(`L'IA ora cerca solo in "${folderMeta(currentFolder).name}"`, 3000);
+  };
+  $('heroSearch').onclick = () => show('search');
+  $('recentList').onclick = (e) => {
+    const li = e.target.closest('li[data-id]');
+    if (!li) return;
+    if (e.target.closest('[data-open]')) { const d = docById(li.dataset.id); if (d) openUrl(d.url); return; }
+    openDoc(li.dataset.id);
+  };
+
+  // lista della spesa
+  $('shopCard').onclick = () => show('shop');
+  $('btnShopBack').onclick = () => show('docs');
+  $('shopForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const v = $('shopInput').value.trim();
+    if (!v) return;
+    await addShopItems(v.split(/[,\n]+/));
+    $('shopInput').value = '';
+    renderShop();
+    $('shopInput').focus();
+  };
+  $('shopList').onclick = async (e) => {
+    const li = e.target.closest('li[data-id]');
+    if (!li) return;
+    const it = shopItems.find((x) => x.id === li.dataset.id);
+    if (!it) return;
+    if (e.target.closest('[data-del]')) {
+      shopItems = shopItems.filter((x) => x.id !== it.id);
+      await DB.del(it.id, 'shop');
+    } else {
+      it.done = !it.done; it.updated = Date.now();
+      await DB.put(it, 'shop');
+    }
+    renderShop();
+  };
+  $('btnShopClear').onclick = async () => {
+    const done = shopItems.filter((x) => x.done);
+    for (const it of done) await DB.del(it.id, 'shop');
+    shopItems = shopItems.filter((x) => !x.done);
+    renderShop();
+    toast(`Tolte ${done.length} cose già prese`);
+  };
+  $('btnShopShare').onclick = shareShop;
+
+  // voce
+  $('btnSpeakDoc').onclick = (e) => Voice.speak(`${$('docTitle').value}.\n${$('docText').value}`, e.currentTarget);
+  try { $('setRate').value = String(Voice.rate()); } catch (e) { /* niente */ }
+  $('setRate').onchange = () => { try { localStorage.setItem('archivio-rate', $('setRate').value); } catch (e) { /* niente */ } };
+  $('btnTestVoice').onclick = (e) => Voice.speak('Ciao! Sono la voce del tuo archivio. Posso leggerti le risposte e i documenti.', e.currentTarget);
+
+  // cartella in cui cerca l'IA
+  $('askScope').onchange = () => {
+    chatScope = $('askScope').value;
+    toast(chatScope ? `L'IA cerca solo in "${scopeName()}"` : 'L\'IA cerca in tutto l\'archivio');
   };
   $('docFolder').onchange = async () => {
     if ($('docFolder').value !== '__new') return;
@@ -1268,10 +1642,7 @@ async function init() {
     inp.value = ''; inp.style.height = 'auto';
     ask(q);
   };
-  $('btnClearChat').onclick = () => {
-    chatHistory = [];
-    [...$('chat').querySelectorAll('.bubble:not(.intro)')].forEach((b) => b.remove());
-  };
+  $('btnClearChat').onclick = () => { clearChatView(); toast('Nuova conversazione (quella di prima è tra le chat salvate)', 3000); };
 
   $('btnSaveSettings').onclick = async () => {
     settings.url = cleanUrl($('setUrl').value);

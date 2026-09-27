@@ -95,6 +95,18 @@ In alto comparirà **"IA: collegata"**.
   - **iPhone**: da Facebook tocca **Condividi › Copia link**, poi nell'app tocca **🎬 Video** e **📋 Incolla**.
   - Il video resta su Facebook: l'app salva il collegamento, non il video. Per guardarlo serve internet, e se chi l'ha pubblicato lo cancella non si vede più.
 
+## Novità della versione 1.3
+
+- **🕘 Chat salvate**: ogni conversazione con l'IA si salva da sola. In "Chiedi" tocca **🕘 Chat salvate** per riaprirne una, continuarla o eliminarla (🗑). Con **＋ Nuova conversazione** ne inizi una nuova, e quella di prima resta salvata. Le chat sono incluse anche in "Esporta archivio".
+
+## Novità della versione 2.0
+
+- **Grafica nuova**: colori indaco e viola, riquadri colorati e tema scuro automatico quando il telefono è in modalità scura.
+- **Home a riquadri**: ogni cartella è un riquadro con la sua icona e il suo colore. Toccalo per entrarci. Con ✎ la rinomini, cambi icona e colore, o la elimini. Tocca **Home** in basso per tornare alla schermata iniziale.
+- **IA su una sola cartella**: in "Chiedi", sotto l'interruttore, c'è **Cerca in**: scegli una cartella e l'IA risponde solo con i documenti di quella cartella. Dentro una cartella c'è anche il pulsante **✨ Chiedi all'IA su questa cartella**.
+- **🔊 Lettura ad alta voce**: sotto ogni risposta dell'IA c'è **Leggi**, e c'è anche nei documenti. Tocca di nuovo per fermare. La velocità si cambia in Opzioni › Voce.
+- **🛒 Lista della spesa**: dalla Home. Scrivi cosa comprare (anche più cose separate da virgola), tocca per spuntare, **Manda la lista** per inviarla su WhatsApp. Quando l'IA ti dà una ricetta, tocca **🛒 Alla spesa** per mettere gli ingredienti nella lista.
+
 ## Da sapere
 
 - La lettura delle foto funziona bene con testo stampato e foto dritte e ben illuminate. Con la scrittura a mano sbaglia spesso: controlla il testo letto e correggilo se serve.

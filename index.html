@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#2f5d50">
+<meta name="theme-color" content="#f4f3fb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0e0f1c" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -16,38 +17,76 @@
 </head>
 <body>
 <header class="top">
-  <h1 id="viewTitle">Documenti</h1>
-  <span id="aiStatus" class="status" title="Stato dell'IA">IA: …</span>
+  <h1 id="viewTitle">Archivio</h1>
+  <span id="aiStatus" class="status" title="Stato dell'IA">IA</span>
 </header>
 
 <main>
-  <!-- DOCUMENTI -->
+  <!-- ARCHIVIO: home con le cartelle + vista di una cartella -->
   <section id="view-docs" class="view active">
-    <div class="chips" id="folderChips"></div>
-    <div class="actions">
-      <button class="primary" id="btnNewNote">＋ Nota</button>
-      <button id="btnNewLink">🎬 Video</button>
-      <label class="button">📷 Foto
+    <!-- solo nella home -->
+    <div class="hero" id="hero">
+      <div class="hello" id="hello">Ciao!</div>
+      <div class="hero-sub" id="heroSub"></div>
+      <button class="hero-search" id="heroSearch" type="button"><span class="i">⌕</span> Cerca nei documenti…</button>
+    </div>
+
+    <!-- solo dentro una cartella -->
+    <div class="fhead" id="folderHead" hidden>
+      <button class="iconbtn" id="btnFolderBack" aria-label="Indietro">‹</button>
+      <div class="fhead-title"><span class="fhead-icon" id="fIcon"></span><h2 id="fName"></h2></div>
+      <button class="iconbtn" id="btnFolderEdit" aria-label="Modifica cartella">✎</button>
+    </div>
+
+    <div class="quick">
+      <button class="qbtn" id="btnNewNote" type="button"><span class="qi">✏️</span>Nota</button>
+      <label class="qbtn"><span class="qi">📷</span>Foto
         <input type="file" id="photoInput" accept="image/*" multiple hidden>
       </label>
-      <label class="button">📄 File
+      <button class="qbtn" id="btnNewLink" type="button"><span class="qi">🎬</span>Video</button>
+      <label class="qbtn"><span class="qi">📄</span>File
         <input type="file" id="fileInput" accept=".pdf,.txt,.md,application/pdf,text/plain,image/*" multiple hidden>
       </label>
     </div>
-    <p class="muted small" id="folderHint" hidden></p>
-    <input type="search" id="docFilter" class="field" placeholder="Filtra per titolo…">
+
     <div id="importProgress" class="progress" hidden><div class="progress-text"></div><div class="bar"><div></div></div></div>
-    <ul id="docList" class="list"></ul>
-    <p id="emptyDocs" class="empty" hidden>Non c'è ancora niente.<br>Scrivi una nota, fai una foto o aggiungi un PDF per cominciare.</p>
+    <div id="alertSlot"></div>
+
+    <div id="homeOnly">
+      <button class="shopcard" id="shopCard" type="button">
+        <span class="shop-ico">🛒</span>
+        <span class="shop-txt"><b>Lista della spesa</b><span id="shopCount" class="muted small"></span></span>
+        <span class="chev">›</span>
+      </button>
+
+      <div class="section-title"><span>Cartelle</span><button class="link" id="btnNewFolder" type="button">＋ Nuova</button></div>
+      <div class="grid" id="folderGrid"></div>
+
+      <div class="section-title" id="recentTitle"><span>Aggiunti di recente</span></div>
+      <ul class="list" id="recentList"></ul>
+    </div>
+
+    <div id="folderOnly" hidden>
+      <button class="pill-ask" id="btnAskFolder" type="button">✨ Chiedi all'IA su questa cartella</button>
+      <input type="search" id="docFilter" class="field" placeholder="Filtra per titolo…">
+      <ul id="docList" class="list"></ul>
+    </div>
+    <p id="emptyDocs" class="empty" hidden></p>
   </section>
 
-  <!-- PROMEMORIA -->
-  <section id="view-reminders" class="view">
-    <div class="actions">
-      <button class="primary" id="btnNewReminder">＋ Nuovo promemoria</button>
+  <!-- LISTA DELLA SPESA -->
+  <section id="view-shop" class="view">
+    <button class="link back" id="btnShopBack" type="button">‹ Archivio</button>
+    <form class="shop-add" id="shopForm">
+      <input type="text" id="shopInput" class="field" placeholder="Aggiungi… (es. latte, 2 kg di mele)" autocomplete="off" enterkeyhint="done">
+      <button class="primary" type="submit">Aggiungi</button>
+    </form>
+    <ul id="shopList" class="shoplist"></ul>
+    <p id="emptyShop" class="empty" hidden>La lista è vuota.<br>Scrivi qui sopra cosa comprare, oppure chiedi all'IA una ricetta e tocca "🛒 Alla spesa".</p>
+    <div class="row" id="shopActions">
+      <button id="btnShopShare" type="button">📤 Manda la lista</button>
+      <button id="btnShopClear" class="danger" type="button">Togli i presi</button>
     </div>
-    <div id="reminderList"></div>
-    <p id="emptyReminders" class="empty" hidden>Nessun promemoria.<br>Aggiungi scadenze come bollo, assicurazione, revisione, visite…</p>
   </section>
 
   <!-- CERCA -->
@@ -60,57 +99,91 @@
   <!-- CHIEDI -->
   <section id="view-ask" class="view">
     <div class="seg" id="chatMode">
-      <button data-mode="docs" class="active">📚 Sui documenti</button>
-      <button data-mode="free">💬 Domanda libera</button>
+      <button data-mode="docs" class="active" type="button">📚 Sui documenti</button>
+      <button data-mode="free" type="button">💬 Domanda libera</button>
     </div>
+    <label class="scope" id="scopeRow">
+      <span>Cerca in</span>
+      <select id="askScope"></select>
+    </label>
     <div id="chat" class="chat">
       <div class="bubble ai intro" id="chatIntro"></div>
     </div>
     <form id="askForm" class="askbar">
       <textarea id="askInput" rows="1" placeholder="Scrivi una domanda…"></textarea>
-      <button class="primary" id="askBtn" type="submit">Invia</button>
+      <button class="primary round" id="askBtn" type="submit" aria-label="Invia">➤</button>
     </form>
-    <button id="btnClearChat" class="link small">Nuova conversazione</button>
+    <div class="row between">
+      <button id="btnClearChat" class="link small" type="button">＋ Nuova conversazione</button>
+      <button id="btnChats" class="link small" type="button">🕘 Chat salvate</button>
+    </div>
+  </section>
+
+  <!-- PROMEMORIA -->
+  <section id="view-reminders" class="view">
+    <div class="actions">
+      <button class="primary" id="btnNewReminder" type="button">＋ Nuovo promemoria</button>
+    </div>
+    <div id="reminderList"></div>
+    <p id="emptyReminders" class="empty" hidden>Nessun promemoria.<br>Aggiungi scadenze come bollo, assicurazione, revisione, visite…</p>
   </section>
 
   <!-- IMPOSTAZIONI -->
   <section id="view-settings" class="view">
-    <h2>Intelligenza artificiale</h2>
-    <label class="lbl">Indirizzo del Mac mini (server Ollama)
-      <input type="text" inputmode="url" id="setUrl" class="field" placeholder="https://mac-mini.tuonome.ts.net" autocapitalize="off" autocorrect="off">
-    </label>
-    <label class="lbl">Modello
-      <div class="row">
-        <select id="setModel" class="field"></select>
-        <button id="btnLoadModels" type="button">Aggiorna</button>
-      </div>
-    </label>
-    <label class="lbl">Quanti pezzi di documento leggere per ogni domanda
-      <input type="number" id="setK" class="field" min="2" max="15" value="6">
-    </label>
-    <div class="row">
-      <button class="primary" id="btnSaveSettings">Salva</button>
-      <button id="btnTest">Prova collegamento</button>
-    </div>
-    <p id="testResult" class="muted"></p>
-
-    <h2>Condividere e fare copie</h2>
-    <p class="muted small">Esporta tutto in un file per fare una copia di sicurezza o per passarlo a un altro telefono. Chi lo importa riceve i documenti che non ha già.</p>
-    <div class="row">
-      <button id="btnExport">⬆︎ Esporta archivio</button>
-      <label class="button">⬇︎ Importa archivio
-        <input type="file" id="importInput" accept=".json,application/json" hidden>
+    <div class="card">
+      <h2>Intelligenza artificiale</h2>
+      <label class="lbl">Indirizzo del Mac mini (server Ollama)
+        <input type="text" inputmode="url" id="setUrl" class="field" placeholder="https://mac-mini.tuonome.ts.net" autocapitalize="off" autocorrect="off">
       </label>
+      <label class="lbl">Modello
+        <div class="row">
+          <select id="setModel" class="field"></select>
+          <button id="btnLoadModels" type="button">Aggiorna</button>
+        </div>
+      </label>
+      <label class="lbl">Quanti pezzi di documento leggere per ogni domanda
+        <input type="number" id="setK" class="field" min="2" max="15" value="6">
+      </label>
+      <div class="row">
+        <button class="primary" id="btnSaveSettings" type="button">Salva</button>
+        <button id="btnTest" type="button">Prova collegamento</button>
+      </div>
+      <p id="testResult" class="muted"></p>
     </div>
 
-    <h2>Spazio</h2>
-    <p id="storageInfo" class="muted small"></p>
-    <p class="muted small">Versione <span id="appVersion"></span></p>
+    <div class="card">
+      <h2>Voce</h2>
+      <label class="lbl">Velocità di lettura
+        <select id="setRate" class="field">
+          <option value="0.8">Lenta</option>
+          <option value="1" selected>Normale</option>
+          <option value="1.15">Veloce</option>
+        </select>
+      </label>
+      <button id="btnTestVoice" type="button">🔊 Prova la voce</button>
+    </div>
+
+    <div class="card">
+      <h2>Condividere e fare copie</h2>
+      <p class="muted small">Esporta tutto in un file per fare una copia di sicurezza o per passarlo a un altro telefono. Chi lo importa riceve quello che non ha già.</p>
+      <div class="row">
+        <button id="btnExport" type="button">⬆︎ Esporta archivio</button>
+        <label class="button">⬇︎ Importa archivio
+          <input type="file" id="importInput" accept=".json,application/json" hidden>
+        </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Spazio</h2>
+      <p id="storageInfo" class="muted small"></p>
+      <p class="muted small">Versione <span id="appVersion"></span></p>
+    </div>
   </section>
 
   <!-- DETTAGLIO / EDITOR -->
   <section id="view-doc" class="view">
-    <button class="link" id="btnBack">‹ Indietro</button>
+    <button class="link back" id="btnBack" type="button">‹ Indietro</button>
     <input type="text" id="docTitle" class="field title" placeholder="Titolo">
     <p id="docMeta" class="muted small"></p>
     <label class="lbl">Cartella
@@ -130,19 +203,25 @@
     <div id="docOcrInfo" class="muted small" hidden>Testo letto dalla foto: se ci sono errori puoi correggerli qui sotto.</div>
     <textarea id="docText" class="field doctext" placeholder="Scrivi qui…"></textarea>
     <div class="row">
-      <button class="primary" id="btnSaveDoc">Salva</button>
-      <button id="btnDocReminder">⏰ Promemoria</button>
-      <button class="danger" id="btnDeleteDoc">Elimina</button>
+      <button class="primary" id="btnSaveDoc" type="button">Salva</button>
+      <button id="btnSpeakDoc" type="button">🔊 Leggi</button>
+      <button id="btnDocReminder" type="button">⏰ Promemoria</button>
+      <button class="danger" id="btnDeleteDoc" type="button">Elimina</button>
     </div>
   </section>
 </main>
 
 <nav class="tabs">
-  <button data-view="docs" class="active"><span>📚</span>Documenti</button>
-  <button data-view="search"><span>🔎</span>Cerca</button>
-  <button data-view="ask"><span>💬</span>Chiedi</button>
-  <button data-view="reminders"><span>⏰<i id="remBadge" class="badge" hidden></i></span>Promemoria</button>
-  <button data-view="settings"><span>⚙︎</span>Opzioni</button>
+  <button data-view="docs" class="active" type="button">
+    <svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Home</button>
+  <button data-view="search" type="button">
+    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Cerca</button>
+  <button data-view="ask" type="button">
+    <svg viewBox="0 0 24 24"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>Chiedi</button>
+  <button data-view="reminders" type="button">
+    <span class="tab-ico"><svg viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 1 1 12 0v5l1.5 2h-15z"/><path d="M10 21h4"/></svg><i id="remBadge" class="badge" hidden></i></span>Promemoria</button>
+  <button data-view="settings" type="button">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Opzioni</button>
 </nav>
 
 <!-- FINESTRA CARTELLA -->
@@ -152,6 +231,8 @@
     <label class="lbl">Nome
       <input type="text" id="folderName" class="field" placeholder="Es. Casa, Salute, Auto…" maxlength="40" required>
     </label>
+    <div class="lbl">Icona</div>
+    <div class="emojis" id="folderEmojis"></div>
     <div class="lbl">Colore</div>
     <div class="swatches" id="folderColors"></div>
     <div class="row">
@@ -208,6 +289,14 @@
       <button class="danger" value="delete" id="btnRemDelete" formnovalidate>Elimina</button>
     </div>
     <p class="muted small">"Metti nel calendario" lo aggiunge al calendario del telefono, così ti arriva l'avviso anche con l'app chiusa.</p>
+  </form>
+</dialog>
+
+<!-- CHAT SALVATE -->
+<dialog id="chatsDialog" class="sheet">
+  <form method="dialog">
+    <div class="row between"><h2>Chat salvate</h2><button value="close">Chiudi</button></div>
+    <ul id="chatList" class="list"></ul>
   </form>
 </dialog>
 
