@@ -1,7 +1,7 @@
 /* Archivio IA — note e documenti con ricerca offline e domande a un'IA locale (Ollama). */
 'use strict';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const $ = (id) => document.getElementById(id);
 
 /* ---------------- Archivio (IndexedDB) ---------------- */
@@ -94,8 +94,10 @@ function chunkDoc(doc) {
     }
     flush();
   }
+  // un documento senza testo (es. un link senza note) si trova comunque dal titolo
+  if (!chunks.length) chunks.push({ docId: doc.id, page: null, text: doc.type === 'link' ? (doc.url || '') : '' });
   // il titolo aiuta a trovare il documento
-  if (chunks.length) chunks[0].title = true;
+  chunks[0].title = true;
   return chunks;
 }
 
@@ -104,12 +106,13 @@ function buildIndex() {
   const vocab = new Map(); // parola -> numero di pezzi che la contengono
   for (const d of docs) {
     for (const c of chunkDoc(d)) {
-      const toks = tokens((c.title ? d.title + ' ' : '') + c.text);
+      const extra = d.type === 'link' ? ' ' + linkInfo(d.url).site + ' video link' : '';
+      const toks = tokens((c.title ? d.title + extra + ' ' : '') + c.text);
       const tf = new Map();
       for (const t of toks) tf.set(t, (tf.get(t) || 0) + 1);
       tf.forEach((_, t) => vocab.set(t, (vocab.get(t) || 0) + 1));
       c.tf = tf; c.len = toks.length || 1;
-      c.titleToks = new Set(tokens(d.title));
+      c.titleToks = new Set(tokens(d.title + extra));
       chunks.push(c);
     }
   }
@@ -220,7 +223,44 @@ function typeLabel(d) {
   if (d.type === 'pdf') return `PDF · ${d.pages.length} pag.` + (d.ocr ? ' · scansione' : '');
   if (d.type === 'photo') return (d.images && d.images.length > 1) ? `Foto · ${d.images.length}` : 'Foto';
   if (d.type === 'file') return 'File di testo';
+  if (d.type === 'link') { const li = linkInfo(d.url); return `${li.emoji} ${li.site}`; }
   return 'Nota';
+}
+
+/* ---------------- Video e link ---------------- */
+function linkInfo(url) {
+  let host = '';
+  try { host = new URL(url).hostname.replace(/^www\.|^m\.|^web\./, ''); } catch (e) { /* niente */ }
+  const is = (re) => re.test(host);
+  if (is(/(^|\.)(facebook\.com|fb\.watch|fb\.com)$/)) return { site: 'Facebook', emoji: '🎬', color: '#1877f2' };
+  if (is(/(^|\.)(youtube\.com|youtu\.be)$/)) {
+    const m = String(url).match(/(?:v=|youtu\.be\/|shorts\/|embed\/)([\w-]{11})/);
+    return { site: 'YouTube', emoji: '▶︎', color: '#e62117', ytId: m ? m[1] : null };
+  }
+  if (is(/(^|\.)instagram\.com$/)) return { site: 'Instagram', emoji: '📸', color: '#c13584' };
+  if (is(/(^|\.)tiktok\.com$/)) return { site: 'TikTok', emoji: '🎵', color: '#111' };
+  if (is(/(^|\.)(wa\.me|whatsapp\.com)$/)) return { site: 'WhatsApp', emoji: '💬', color: '#25d366' };
+  return { site: host || 'Link', emoji: '🔗', color: '#6b716d' };
+}
+// trova il primo indirizzo web dentro un testo (Facebook spesso condivide "testo + link")
+function extractUrl(t) {
+  const m = String(t || '').match(/https?:\/\/[^\s<>"']+/i);
+  if (m) return m[0].replace(/[).,;!?]+$/, '');
+  const w = String(t || '').match(/(?:^|\s)((?:www\.|m\.)?[a-z0-9-]+\.(?:com|it|be|watch|me)\/[^\s]*)/i);
+  return w ? 'https://' + w[1] : '';
+}
+function openUrl(url) {
+  if (!url) return toast('Manca il link');
+  window.open(url, '_blank', 'noopener');
+}
+let newDocType = 'note';
+function newLink(prefill = {}) {
+  newDocType = 'link';
+  openDoc(null);
+  $('docUrl').value = prefill.url || '';
+  $('docTitle').value = prefill.title || '';
+  $('docText').value = prefill.note || '';
+  if (!prefill.url) setTimeout(() => $('docUrl').focus(), 60);
 }
 
 /* ---------------- Cartelle ---------------- */
@@ -236,8 +276,10 @@ function folderTag(d) {
 function renderFolders() {
   const count = (id) => docs.filter((d) => (id === 'none' ? !folderById(d.folderId) : d.folderId === id)).length;
   const sorted = [...folders].sort((a, b) => a.name.localeCompare(b.name, 'it'));
-  if (currentFolder !== 'all' && currentFolder !== 'none' && !folderById(currentFolder)) currentFolder = 'all';
+  if (!['all', 'none', 'links'].includes(currentFolder) && !folderById(currentFolder)) currentFolder = 'all';
   let html = `<button class="chip ${currentFolder === 'all' ? 'active' : ''}" data-folder="all">Tutti · ${docs.length}</button>`;
+  const nLinks = docs.filter((d) => d.type === 'link').length;
+  if (nLinks || currentFolder === 'links') html += `<button class="chip ${currentFolder === 'links' ? 'active' : ''}" data-folder="links">🎬 Video e link · ${nLinks}</button>`;
   html += sorted.map((f) => `<button class="chip ${currentFolder === f.id ? 'active' : ''}" data-folder="${f.id}">${dot(f.color)} ${esc(f.name)} · ${count(f.id)}</button>`).join('');
   const loose = count('none');
   if (folders.length && loose) html += `<button class="chip ${currentFolder === 'none' ? 'active' : ''}" data-folder="none">Senza cartella · ${loose}</button>`;
@@ -302,12 +344,13 @@ function renderDocs() {
   const f = norm($('docFilter').value.trim());
   const list = docs.filter((d) => {
     if (currentFolder === 'none' && folderById(d.folderId)) return false;
-    if (currentFolder !== 'all' && currentFolder !== 'none' && d.folderId !== currentFolder) return false;
+    if (currentFolder === 'links' && d.type !== 'link') return false;
+    if (folderById(currentFolder) && d.folderId !== currentFolder) return false;
     return !f || norm(d.title).includes(f);
   }).sort((a, b) => b.updated - a.updated);
-  $('docList').innerHTML = list.map((d) =>
-    `<li data-id="${d.id}">${d.thumb ? `<img class="mini" src="${d.thumb}" alt="">` : ''}<div class="body"><div class="t">${esc(d.title || 'Senza titolo')}</div>` +
-    `<div class="s">${typeLabel(d)} · ${fmtDate(d.updated)}${currentFolder === 'all' ? folderTag(d) : ''}</div></div></li>`).join('');
+  $('docList').innerHTML = list.map((d) => `<li data-id="${d.id}">${docIcon(d)}<div class="body"><div class="t">${esc(d.title || 'Senza titolo')}</div>` +
+    `<div class="s">${typeLabel(d)} · ${fmtDate(d.updated)}${folderById(currentFolder) ? '' : folderTag(d)}</div></div>` +
+    (d.type === 'link' ? '<button class="go" data-open="1" aria-label="Apri">▶︎</button>' : '') + '</li>').join('');
   $('emptyDocs').hidden = list.length > 0;
   $('emptyDocs').innerHTML = docs.length
     ? 'Questa cartella è vuota.<br>Quello che aggiungi adesso finisce qui dentro.'
@@ -315,6 +358,14 @@ function renderDocs() {
 }
 
 function docById(id) { return docs.find((d) => d.id === id); }
+function docIcon(d) {
+  if (d.type === 'link') {
+    const li = linkInfo(d.url);
+    if (li.ytId) return `<img class="mini" src="https://i.ytimg.com/vi/${li.ytId}/mqdefault.jpg" alt="" onerror="this.outerHTML='<span class=&quot;ico&quot; style=&quot;background:${li.color}&quot;>${li.emoji}</span>'">`;
+    return `<span class="ico" style="background:${li.color}">${li.emoji}</span>`;
+  }
+  return d.thumb ? `<img class="mini" src="${d.thumb}" alt="">` : '';
+}
 const defaultFolder = () => (folderById(currentFolder) ? currentFolder : null);
 
 function openDoc(id, focusTerms) {
@@ -327,6 +378,13 @@ function openDoc(id, focusTerms) {
   fillFolderSelect($('docFolder'), d ? d.folderId : defaultFolder());
   $('docImages').innerHTML = d && d.images ? d.images.map((src, i) => `<img src="${src}" data-i="${i}" alt="Foto ${i + 1}">`).join('') : '';
   $('docOcrInfo').hidden = !(d && d.type === 'photo');
+  if (d) newDocType = d.type;
+  const isLink = newDocType === 'link';
+  $('docLinkBox').hidden = !isLink;
+  $('docUrl').value = isLink && d ? (d.url || '') : '';
+  $('docText').placeholder = isLink ? 'Di cosa parla? Es. "ricetta del tiramisù della nonna"' : 'Scrivi qui…';
+  $('docText').classList.toggle('short', isLink);
+  $('docMeta').textContent = d ? $('docMeta').textContent : (isLink ? 'Nuovo video o link' : 'Nuova nota');
   $('btnDeleteDoc').hidden = !d;
   $('btnDocReminder').hidden = !d;
   show('doc');
@@ -350,13 +408,23 @@ async function saveDoc(stay) {
   const now = Date.now();
   const folderId = $('docFolder').value && $('docFolder').value !== '__new' ? $('docFolder').value : null;
   let d = currentDocId ? docById(currentDocId) : null;
+  const type = d ? d.type : newDocType;
+  let url = '';
+  if (type === 'link') {
+    url = extractUrl($('docUrl').value) || extractUrl($('docText').value);
+    if (!url) { toast('Incolla il link del video (inizia con https://)', 3500); $('docUrl').focus(); return null; }
+    $('docUrl').value = url;
+  }
+  const autoTitle = type === 'link' && !$('docTitle').value.trim() ? `Video ${linkInfo(url).site} del ${fmtDate(now)}` : title;
   if (d) {
-    d.title = title;
+    d.title = autoTitle;
     if (!d.pages) d.text = $('docText').value;
+    if (type === 'link') d.url = url;
     d.folderId = folderId;
     d.updated = now;
   } else {
-    d = { id: uid(), type: 'note', title, text: $('docText').value, folderId, created: now, updated: now };
+    d = { id: uid(), type, title: autoTitle, text: $('docText').value, folderId, created: now, updated: now };
+    if (type === 'link') d.url = url;
     docs.push(d);
     currentDocId = d.id;
   }
@@ -797,7 +865,7 @@ function runSearch() {
   }
   ul.innerHTML = results.map(({ chunk }) => {
     const d = docById(chunk.docId);
-    return `<li data-id="${d.id}">${d.thumb ? `<img class="mini" src="${d.thumb}" alt="">` : ''}<div class="body"><div class="t">${highlight(d.title, terms)}</div>` +
+    return `<li data-id="${d.id}">${docIcon(d)}<div class="body"><div class="t">${highlight(d.title, terms)}</div>` +
       `<div class="s">${typeLabel(d)}${chunk.page ? ' · pagina ' + chunk.page : ''}${folderTag(d)}</div>` +
       `<div class="snip">${snippet(chunk.text, terms)}</div></div></li>`;
   }).join('');
@@ -904,42 +972,57 @@ function bindSources(bubble, sources, terms) {
   });
 }
 
+let chatMode = 'docs'; // 'docs' = risponde sui documenti, 'free' = domanda libera
+
+const FREE_PROMPT = `Sei un assistente gentile e disponibile per una famiglia italiana.
+Rispondi SEMPRE in italiano, in modo semplice, chiaro e non troppo lungo.
+Puoi parlare di qualsiasi argomento: ricette, consigli, spiegazioni, traduzioni, messaggi da scrivere.
+Non hai accesso a internet: se una domanda riguarda notizie recenti, prezzi o orari attuali, dillo e suggerisci di controllare.
+Se non sei sicuro di qualcosa, dillo onestamente invece di inventare.`;
+
 async function ask(question) {
   addBubble('user', esc(question));
   const q = question;
+  const free = chatMode === 'free';
   // per le domande di seguito ("e quando scade?") usa anche la domanda precedente
   const prevQ = chatHistory.filter((m) => m.role === 'user').slice(-1)[0];
   let { results, terms } = search(q, settings.k);
   if (results.length < 2 && prevQ) ({ results, terms } = search(prevQ.content + ' ' + q, settings.k));
-  const sources = results.map((r) => r.chunk);
+  const found = results.map((r) => r.chunk);
+  const sources = free ? [] : found;
 
   const online = await checkAI();
   if (!online || !settings.model) {
     const why = !baseUrl() ? "L'IA non è ancora configurata (vai in Impostazioni)."
       : !navigator.onLine ? 'Sei senza internet, quindi l\'IA non è raggiungibile.'
         : "Non riesco a raggiungere l'IA sul Mac mini (è acceso? Tailscale è attivo?).";
-    const html = `<div class="warn">${why}</div>` + (sources.length
-      ? 'Ecco cosa ho trovato nei documenti:' + sources.map((c, i) => {
+    const html = `<div class="warn">${why}</div>` + (found.length
+      ? (free ? 'Senza IA non posso rispondere a domande libere, ma ecco cosa ho trovato nei tuoi documenti:' : 'Ecco cosa ho trovato nei documenti:') + found.map((c, i) => {
         const d = docById(c.docId);
         return `<div style="margin-top:10px"><a class="cite" data-src="${i}">${esc(d.title)}${c.page ? ' · pag. ' + c.page : ''}</a><div class="small">${snippet(c.text, terms, 220)}</div></div>`;
       }).join('')
-      : 'E nella ricerca normale non ho trovato niente con queste parole.');
-    bindSources(addBubble('ai', html), sources, terms);
+      : (free ? 'Le domande libere funzionano solo quando l\'IA è collegata.' : 'E nella ricerca normale non ho trovato niente con queste parole.'));
+    bindSources(addBubble('ai', html), found, terms);
     return;
   }
 
-  const context = sources.length
-    ? sources.map((c, i) => {
-      const d = docById(c.docId);
-      return `[${i + 1}] Documento: "${d.title}"${c.page ? `, pagina ${c.page}` : ''}\n${c.text}`;
-    }).join('\n\n---\n\n')
-    : '(Nessun estratto trovato per questa domanda.)';
-
-  const messages = [
-    { role: 'system', content: SYSTEM_PROMPT },
-    ...chatHistory.slice(-6),
-    { role: 'user', content: `Estratti dai documenti:\n\n${context}\n\nDomanda: ${q}` },
-  ];
+  let messages;
+  if (free) {
+    messages = [{ role: 'system', content: FREE_PROMPT }, ...chatHistory.slice(-8), { role: 'user', content: q }];
+  } else {
+    const context = sources.length
+      ? sources.map((c, i) => {
+        const d = docById(c.docId);
+        const extra = d.type === 'link' ? `, link: ${d.url}` : '';
+        return `[${i + 1}] Documento: "${d.title}"${c.page ? `, pagina ${c.page}` : ''}${extra}\n${c.text}`;
+      }).join('\n\n---\n\n')
+      : '(Nessun estratto trovato per questa domanda.)';
+    messages = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      ...chatHistory.slice(-6),
+      { role: 'user', content: `Estratti dai documenti:\n\n${context}\n\nDomanda: ${q}` },
+    ];
+  }
 
   const bubble = addBubble('ai typing', '');
   bindSources(bubble, sources, terms);
@@ -1068,8 +1151,54 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
   document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => show(b.dataset.view)));
-  $('btnNewNote').onclick = () => openDoc(null);
-  $('docList').onclick = (e) => { const li = e.target.closest('li[data-id]'); if (li) openDoc(li.dataset.id); };
+  $('btnNewNote').onclick = () => { newDocType = 'note'; openDoc(null); };
+  $('btnNewLink').onclick = () => newLink();
+  $('docList').onclick = (e) => {
+    const li = e.target.closest('li[data-id]');
+    if (!li) return;
+    if (e.target.closest('[data-open]')) { const d = docById(li.dataset.id); if (d) openUrl(d.url); return; }
+    openDoc(li.dataset.id);
+  };
+  $('btnOpenUrl').onclick = () => openUrl(extractUrl($('docUrl').value));
+  $('btnPasteUrl').onclick = async () => {
+    try {
+      const t = await navigator.clipboard.readText();
+      const u = extractUrl(t);
+      if (!u) return toast('Negli appunti non c\'è un link');
+      $('docUrl').value = u;
+      const rest = t.replace(u, '').replace(/\s{2,}/g, ' ').trim();
+      if (rest && !$('docText').value.trim()) $('docText').value = rest;
+    } catch (e) { toast('Tieni premuto nel campo del link e scegli "Incolla"', 3500); $('docUrl').focus(); }
+  };
+
+  // modalità della chat
+  const setMode = (m, silent) => {
+    chatMode = m === 'free' ? 'free' : 'docs';
+    try { localStorage.setItem('archivio-chatmode', chatMode); } catch (e) { /* niente */ }
+    document.querySelectorAll('#chatMode button').forEach((b) => b.classList.toggle('active', b.dataset.mode === chatMode));
+    $('chatIntro').innerHTML = chatMode === 'free'
+      ? 'Chiedimi quello che vuoi: una ricetta, un consiglio, una spiegazione, una traduzione, un messaggio da scrivere…<br><span class="muted small">Non guardo i tuoi documenti e non ho internet: per notizie, prezzi e orari controlla sempre.</span>'
+      : 'Fammi una domanda sui vostri documenti. Rispondo usando solo quello che c\'è dentro l\'archivio.<br><span class="muted small">Se l\'IA non è raggiungibile, ti mostro comunque i risultati della ricerca.</span>';
+    $('askInput').placeholder = chatMode === 'free' ? 'Chiedi quello che vuoi…' : 'Scrivi una domanda sui documenti…';
+    if (!silent) {
+      chatHistory = [];
+      [...$('chat').querySelectorAll('.bubble:not(.intro)')].forEach((b) => b.remove());
+    }
+  };
+  let savedMode = 'docs';
+  try { savedMode = localStorage.getItem('archivio-chatmode') || 'docs'; } catch (e) { /* niente */ }
+  setMode(savedMode, true);
+  $('chatMode').onclick = (e) => { const b = e.target.closest('[data-mode]'); if (b && b.dataset.mode !== chatMode) setMode(b.dataset.mode); };
+
+  // arrivato dal tasto "Condividi" di Facebook/YouTube (Android)
+  const sp = new URLSearchParams(location.search);
+  if (sp.has('share_url') || sp.has('share_text') || sp.has('share_title')) {
+    const all = [sp.get('share_url'), sp.get('share_text'), sp.get('share_title')].filter(Boolean).join(' ');
+    const url = extractUrl(all);
+    const note = (sp.get('share_text') || '').replace(url, '').trim();
+    history.replaceState(null, '', location.pathname);
+    setTimeout(() => { newLink({ url, note, title: (sp.get('share_title') || '').slice(0, 80) }); toast('Scrivi di cosa parla e premi Salva', 3500); }, 100);
+  }
   $('docFilter').oninput = renderDocs;
   $('fileInput').onchange = (e) => { importFiles([...e.target.files]); e.target.value = ''; };
   $('photoInput').onchange = (e) => { importFiles([...e.target.files]); e.target.value = ''; };
@@ -1109,6 +1238,7 @@ async function init() {
   $('btnNewReminder').onclick = () => reminderDialog(null);
   $('btnDocReminder').onclick = async () => {
     const d = await saveDoc(true);
+    if (!d) return;
     reminderDialog(null, { title: d.title, docId: d.id });
   };
   $('reminderList').onclick = (e) => {

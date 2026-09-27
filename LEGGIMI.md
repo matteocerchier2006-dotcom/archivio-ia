@@ -87,6 +87,14 @@ In alto comparirà **"IA: collegata"**.
 - **Cartelle**: tocca "＋ Cartella" per crearne una. Tocca di nuovo una cartella già selezionata per rinominarla o eliminarla (i documenti non si cancellano). Quello che aggiungi mentre sei dentro una cartella finisce lì.
 - **⏰ Promemoria**: scadenze con avviso in anticipo, anche ripetute ogni mese o ogni anno. Un promemoria si può collegare a un documento. Con "Metti nel calendario" lo aggiungi al calendario del telefono, così ti arriva l'avviso anche con l'app chiusa.
 
+## Novità della versione 1.2
+
+- **💬 Domanda libera**: in "Chiedi" scegli in alto "Domanda libera" per chiedere qualsiasi cosa (ricette, consigli, traduzioni, messaggi da scrivere). L'IA sul Mac mini non ha internet: per notizie, prezzi e orari controlla sempre.
+- **🎬 Video e link**: salva i video di Facebook, YouTube, Instagram, TikTok o qualsiasi link, con un titolo e una nota. Il tasto ▶︎ apre il video. Si possono mettere nelle cartelle e si trovano con Cerca e con l'IA ("qual era il video del tiramisù?").
+  - **Android**: da Facebook tocca **Condividi** e scegli **Archivio**: si apre già con il link dentro.
+  - **iPhone**: da Facebook tocca **Condividi › Copia link**, poi nell'app tocca **🎬 Video** e **📋 Incolla**.
+  - Il video resta su Facebook: l'app salva il collegamento, non il video. Per guardarlo serve internet, e se chi l'ha pubblicato lo cancella non si vede più.
+
 ## Da sapere
 
 - La lettura delle foto funziona bene con testo stampato e foto dritte e ben illuminate. Con la scrittura a mano sbaglia spesso: controlla il testo letto e correggilo se serve.

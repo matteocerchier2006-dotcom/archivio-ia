@@ -26,6 +26,7 @@
     <div class="chips" id="folderChips"></div>
     <div class="actions">
       <button class="primary" id="btnNewNote">＋ Nota</button>
+      <button id="btnNewLink">🎬 Video</button>
       <label class="button">📷 Foto
         <input type="file" id="photoInput" accept="image/*" multiple hidden>
       </label>
@@ -58,8 +59,12 @@
 
   <!-- CHIEDI -->
   <section id="view-ask" class="view">
+    <div class="seg" id="chatMode">
+      <button data-mode="docs" class="active">📚 Sui documenti</button>
+      <button data-mode="free">💬 Domanda libera</button>
+    </div>
     <div id="chat" class="chat">
-      <div class="bubble ai intro">Fammi una domanda sui vostri documenti. Rispondo usando solo quello che c'è dentro l'archivio.<br><span class="muted small">Se l'IA non è raggiungibile, ti mostro comunque i risultati della ricerca.</span></div>
+      <div class="bubble ai intro" id="chatIntro"></div>
     </div>
     <form id="askForm" class="askbar">
       <textarea id="askInput" rows="1" placeholder="Scrivi una domanda…"></textarea>
@@ -111,6 +116,16 @@
     <label class="lbl">Cartella
       <select id="docFolder" class="field"></select>
     </label>
+    <div id="docLinkBox" hidden>
+      <label class="lbl">Link (Facebook, YouTube, Instagram, sito…)
+        <div class="row">
+          <input type="text" inputmode="url" id="docUrl" class="field" placeholder="Incolla qui il link" autocapitalize="off" autocorrect="off">
+          <button type="button" id="btnPasteUrl">📋 Incolla</button>
+        </div>
+      </label>
+      <button type="button" class="primary wide" id="btnOpenUrl">▶︎ Apri il video</button>
+      <div class="lbl">Note</div>
+    </div>
     <div id="docImages" class="thumbs"></div>
     <div id="docOcrInfo" class="muted small" hidden>Testo letto dalla foto: se ci sono errori puoi correggerli qui sotto.</div>
     <textarea id="docText" class="field doctext" placeholder="Scrivi qui…"></textarea>
