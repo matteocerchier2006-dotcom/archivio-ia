@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2f5d50">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Archivio">
+<title>Archivio IA</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <h1 id="viewTitle">Documenti</h1>
+  <span id="aiStatus" class="status" title="Stato dell'IA">IA: …</span>
+</header>
+
+<main>
+  <!-- DOCUMENTI -->
+  <section id="view-docs" class="view active">
+    <div class="actions">
+      <button class="primary" id="btnNewNote">＋ Nuova nota</button>
+      <label class="button">📄 Aggiungi file
+        <input type="file" id="fileInput" accept=".pdf,.txt,.md,application/pdf,text/plain" multiple hidden>
+      </label>
+    </div>
+    <input type="search" id="docFilter" class="field" placeholder="Filtra per titolo…">
+    <p id="importProgress" class="muted" hidden></p>
+    <ul id="docList" class="list"></ul>
+    <p id="emptyDocs" class="empty" hidden>Non c'è ancora niente.<br>Scrivi una nota o aggiungi un PDF per cominciare.</p>
+  </section>
+
+  <!-- CERCA -->
+  <section id="view-search" class="view">
+    <input type="search" id="searchInput" class="field big" placeholder="Cosa stai cercando?" autocomplete="off">
+    <p class="muted small">Funziona sempre, anche senza internet. Trova le parole anche scritte un po' sbagliate.</p>
+    <ul id="searchResults" class="list"></ul>
+  </section>
+
+  <!-- CHIEDI -->
+  <section id="view-ask" class="view">
+    <div id="chat" class="chat">
+      <div class="bubble ai intro">Fammi una domanda sui vostri documenti. Rispondo usando solo quello che c'è dentro l'archivio.<br><span class="muted small">Se l'IA non è raggiungibile, ti mostro comunque i risultati della ricerca.</span></div>
+    </div>
+    <form id="askForm" class="askbar">
+      <textarea id="askInput" rows="1" placeholder="Scrivi una domanda…"></textarea>
+      <button class="primary" id="askBtn" type="submit">Invia</button>
+    </form>
+    <button id="btnClearChat" class="link small">Nuova conversazione</button>
+  </section>
+
+  <!-- IMPOSTAZIONI -->
+  <section id="view-settings" class="view">
+    <h2>Intelligenza artificiale</h2>
+    <label class="lbl">Indirizzo del Mac mini (server Ollama)
+      <input type="url" id="setUrl" class="field" placeholder="https://mac-mini.tuonome.ts.net" autocapitalize="off" autocorrect="off">
+    </label>
+    <label class="lbl">Modello
+      <div class="row">
+        <select id="setModel" class="field"></select>
+        <button id="btnLoadModels" type="button">Aggiorna</button>
+      </div>
+    </label>
+    <label class="lbl">Quanti pezzi di documento leggere per ogni domanda
+      <input type="number" id="setK" class="field" min="2" max="15" value="6">
+    </label>
+    <div class="row">
+      <button class="primary" id="btnSaveSettings">Salva</button>
+      <button id="btnTest">Prova collegamento</button>
+    </div>
+    <p id="testResult" class="muted"></p>
+
+    <h2>Condividere e fare copie</h2>
+    <p class="muted small">Esporta tutto in un file per fare una copia di sicurezza o per passarlo a un altro telefono. Chi lo importa riceve i documenti che non ha già.</p>
+    <div class="row">
+      <button id="btnExport">⬆︎ Esporta archivio</button>
+      <label class="button">⬇︎ Importa archivio
+        <input type="file" id="importInput" accept=".json,application/json" hidden>
+      </label>
+    </div>
+
+    <h2>Spazio</h2>
+    <p id="storageInfo" class="muted small"></p>
+    <p class="muted small">Versione <span id="appVersion"></span></p>
+  </section>
+
+  <!-- DETTAGLIO / EDITOR -->
+  <section id="view-doc" class="view">
+    <button class="link" id="btnBack">‹ Indietro</button>
+    <input type="text" id="docTitle" class="field title" placeholder="Titolo">
+    <p id="docMeta" class="muted small"></p>
+    <textarea id="docText" class="field doctext" placeholder="Scrivi qui…"></textarea>
+    <div class="row">
+      <button class="primary" id="btnSaveDoc">Salva</button>
+      <button class="danger" id="btnDeleteDoc">Elimina</button>
+    </div>
+  </section>
+</main>
+
+<nav class="tabs">
+  <button data-view="docs" class="active"><span>📚</span>Documenti</button>
+  <button data-view="search"><span>🔎</span>Cerca</button>
+  <button data-view="ask"><span>💬</span>Chiedi</button>
+  <button data-view="settings"><span>⚙︎</span>Impostazioni</button>
+</nav>
+
+<div id="toast" class="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
